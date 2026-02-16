@@ -1,0 +1,33 @@
+{
+  "name": "informed_vsgraphs_ros_jazzy",
+  // Must match the USERNAME arg in docker-compose.yml (default: "user")
+  "remoteUser": "${localEnv:USERNAME:user}",
+  "service": "informed_vsgraphs_ros2",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-themes",
+        "ms-vscode.cpptools-extension-pack",
+        //     "ms-iot.vscode-ros",
+        "ms-vscode.cmake-tools",
+        // "esbenp.prettier-vscode",
+        "GitHub.copilot"
+        // "eamodio.gitlens",
+        // "PKief.material-icon-theme"
+      ],
+      "settings": {
+        "files.associations": {
+          "*.rviz": "yaml",
+          "*.srdf": "xml",
+          "*.urdf": "xml",
+          "*.xacro": "xml"
+        }
+      }
+    }
+  },
+  "workspaceFolder": "/home/${localEnv:USERNAME:user}/ros2_ws",
+  "dockerComposeFile": "../docker/docker-compose.yml"
+}

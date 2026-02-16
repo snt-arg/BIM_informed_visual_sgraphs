@@ -1,0 +1,15 @@
+# the path to the directory where the results will be saved
+# ** MODIFY ** Set this to your local datasets/results directory
+results_dir: "~/datasets"
+
+# Such as orb3, vsgraphs, uco, suco (semantic UcoSLAM)
+slam_method: "vsgraphs"
+
+# the sequence number/name of the dataset
+dataset_seq: "seq05_ivs_Uni_building"
+
+# the relevant topics for the evaluation
+ros_topics:
+  camera_pose: "/vs_graphs/camera_pose"
+  ground_truth_pose: "/gazebo/model_states"
+  keyframe_list: "/vs_graphs/keyframe_list"
