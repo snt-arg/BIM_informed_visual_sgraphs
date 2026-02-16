@@ -1,0 +1,52 @@
+services:
+  informed_vsgraphs_ros2:
+    image: informed_vsgraphs_ros2
+    build:
+      context: .
+      dockerfile: Jazzy.Dockerfile
+      args:
+        USERNAME: ${USERNAME:-user}
+        USER_UID: 1000
+        USER_GID: 1000
+    container_name: informed_vsgraphs_ros2
+    environment:
+      DISPLAY: $DISPLAY
+      XAUTHORITY: $XAUTHORITY
+      SSH_AUTH_SOCK: ${SSH_AUTH_SOCK:-}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      TERM: $TERM
+      SHELL: $SHELL
+    runtime: nvidia
+    privileged: true
+    restart: always
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      # Display
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # - ~/.Xauthority:/home/user/.Xauthority:rw
+      - $XAUTHORITY:$XAUTHORITY:rw
+      # SSH (optional, for git operations inside container)
+      # - $SSH_AUTH_SOCK:$SSH_AUTH_SOCK
+      # TMUX (optional, mount only if you use tmux)
+      # - ~/.tmux:/home/$USERNAME/.tmux:ro
+      # - ~/.tmux.conf:/home/$USERNAME/.tmux.conf:ro
+      # Git (optional)
+      # - ~/.gitconfig:/home/$USERNAME/.gitconfig_local
+      # Dev
+      - /dev:/dev:rw
+
+      # Working Directories (** MODIFY ** set VS_GRAPHS_WS to your local workspace path)
+      - "${VS_GRAPHS_WS:-.}:/home/$USERNAME/ros2_ws"
+      # Data Directories (** MODIFY ** set DATASETS_DIR to your local datasets path)
+      - "${DATASETS_DIR:-~/datasets}:/home/$USERNAME/datasets"
+
+      - container_home_cache:/home/$USERNAME/.cache # Optional: persist cache
+
+    network_mode: "host"
+    command: tail -f /dev/null # Used to set correct U/G(ID) for shared folder
+
+volumes:
+  container_home_cache:
+    driver: local
