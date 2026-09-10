@@ -12,9 +12,9 @@ This file documents the available _launch-time arguments_ that can be passed whe
 | `visualize_segmented_scene` | `true`                                     | Toggle the visualization of segmented scenes in RViz.                 |
 | `sensor_config`             | `RealSense_D435i`                          | Choose a predefined sensor configuration                              |
 | `camera_frame`              | `camera`                                   | Set the reference `frame` name for the `camera`.                      |
-| `rgb_image_topic`           | `/camera/color/image_raw`                  | Topic name for the RGB image stream.                                  |
-| `rgb_camera_info_topic`     | `/camera/color/camera_info`                | Topic name for RGB camera intrinsics.                                 |
-| `depth_image_topic`         | `/camera/aligned_depth_to_color/image_raw` | Topic name for the aligned depth image.                               |
+| `rgb_image_topic`           | `/camera/realsense/color/image_raw`                  | Topic name for the RGB image stream.                                  |
+| `rgb_camera_info_topic`     | `/camera/realsense/color/camera_info`                | Topic name for RGB camera intrinsics.                                 |
+| `depth_image_topic`         | `/camera/realsense/aligned_depth_to_color/image_raw` | Topic name for the aligned depth image.                               |
 
 ## 🏗️ BIM Arguments
 
@@ -24,6 +24,7 @@ This file documents the available _launch-time arguments_ that can be passed whe
 | `bimID_1`                | `1`                    | `TAG` of the first wall used for initial alignment.                                            |
 | `bimID_2`                | `3`                    | `TAG` of the second wall used for initial alignment. Must be non-parallel to `bimID_1`.          |
 | `runAgraph`              | `true`                 | Enable BIM-informed graph optimization in the back-end.                                        |
+| `XYZcoord`               | `false`                | Coordinate convention for wall matching. Keep at `false` (2D wall matching).                    |
 | `justInitialAlignment`   | `false`                | Stop after initial alignment, skipping the continuous BIM-informed optimization.               |
 
 To launch the system with default parameters, use the following command:
@@ -59,7 +60,7 @@ To use the [ICL dataset](https://www.doc.ic.ac.uk/~ahanda/VaFRIC/iclnuim.html) r
 | Argument            | Default Value                              | New Value                 |
 | ------------------- | ------------------------------------------ | ------------------------- |
 | `sensor_config`     | `RealSense_D435i`                          | `ICL`                     |
-| `depth_image_topic` | `/camera/aligned_depth_to_color/image_raw` | `/camera/depth/image_raw` |
+| `depth_image_topic` | `/camera/realsense/aligned_depth_to_color/image_raw` | `/camera/depth/image_raw` |
 
 Or simply launch:
 
@@ -75,9 +76,9 @@ To use the [OpenLoris dataset](https://lifelong-robotic-vision.github.io/dataset
 | ----------------------- | ------------------------------------------ | ---------------------------------------- |
 | `camera_frame`          | `camera`                                   | `d400_color`                             |
 | `sensor_config`         | `RealSense_D435i`                          | `OpenLorisScene`                         |
-| `rgb_image_topic`       | `/camera/color/image_raw`                  | `/d400/color/image_raw`                  |
-| `rgb_camera_info_topic` | `/camera/color/camera_info`                | `/d400/color/camera_info`                |
-| `depth_image_topic`     | `/camera/aligned_depth_to_color/image_raw` | `/d400/aligned_depth_to_color/image_raw` |
+| `rgb_image_topic`       | `/camera/realsense/color/image_raw`                  | `/d400/color/image_raw`                  |
+| `rgb_camera_info_topic` | `/camera/realsense/color/camera_info`                | `/d400/color/camera_info`                |
+| `depth_image_topic`     | `/camera/realsense/aligned_depth_to_color/image_raw` | `/d400/aligned_depth_to_color/image_raw` |
 
 Or simply launch:
 
@@ -92,7 +93,7 @@ To use the [ScanNet dataset](http://www.scan-net.org/) rosbags with `ivS-Graphs`
 | Argument            | Default Value                              | New Value                 |
 | ------------------- | ------------------------------------------ | ------------------------- |
 | `sensor_config`     | `RealSense_D435i`                          | `ScanNet`                 |
-| `depth_image_topic` | `/camera/aligned_depth_to_color/image_raw` | `/camera/depth/image_raw` |
+| `depth_image_topic` | `/camera/realsense/aligned_depth_to_color/image_raw` | `/camera/depth/image_raw` |
 
 Or simply launch:
 
@@ -108,9 +109,9 @@ To use the [TUM RGB-D dataset](https://cvg.cit.tum.de/data/datasets/rgbd-dataset
 | ----------------------- | ------------------------------------------ | ------------------------- |
 | `camera_frame`          | `camera`                                   | `kinect`                  |
 | `sensor_config`         | `RealSense_D435i`                          | `TUM1` / `TUM2` / `TUM3`  |
-| `rgb_image_topic`       | `/camera/color/image_raw`                  | `/camera/rgb/image_color` |
-| `depth_image_topic`     | `/camera/aligned_depth_to_color/image_raw` | `/camera/depth/image`     |
-| `rgb_camera_info_topic` | `/camera/color/camera_info`                | `/camera/rgb/camera_info` |
+| `rgb_image_topic`       | `/camera/realsense/color/image_raw`                  | `/camera/rgb/image_color` |
+| `depth_image_topic`     | `/camera/realsense/aligned_depth_to_color/image_raw` | `/camera/depth/image`     |
+| `rgb_camera_info_topic` | `/camera/realsense/color/camera_info`                | `/camera/rgb/camera_info` |
 
 Or simply launch:
 
