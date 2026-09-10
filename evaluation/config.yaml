@@ -6,7 +6,8 @@ results_dir: "~/datasets"
 slam_method: "vsgraphs"
 
 # the sequence number/name of the dataset
-dataset_seq: "seq05_ivs_Uni_building"
+# ** MODIFY ** Set this to your dataset's sequence name
+dataset_seq: "your_sequence_name"
 
 # the relevant topics for the evaluation
 ros_topics:

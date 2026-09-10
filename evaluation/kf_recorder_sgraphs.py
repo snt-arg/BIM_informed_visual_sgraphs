@@ -29,7 +29,8 @@ files_path = os.environ.get(
     "VS_GRAPHS_OUTPUT_DIR", os.path.expanduser("~/vs_graphs_output/")
 )
 slam_method = "s_graphs"
-dataset_seq = "vs_Uni_building"
+# ** MODIFY ** Set this to your dataset's sequence name
+dataset_seq = "your_sequence_name"
 slam_pose_topic = "/s_graphs/graph_keyframes"
 
 if len(sys.argv) > 1:
