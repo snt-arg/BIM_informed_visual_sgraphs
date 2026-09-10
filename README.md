@@ -5,6 +5,10 @@
 <!-- Badges -->
 
 [![arXiv](https://img.shields.io/badge/arXiv-2509.13972-b31b1b.svg)](http://arxiv.org/abs/2509.13972)
+[![Static Badge](https://img.shields.io/badge/Docker-available-%23B31B1B?style=flat&logo=docker&logoColor=%232496ED&color=%232496ED)](/docker/README.md)
+[![Static Badge](https://img.shields.io/badge/YouTube-watch-%23FF0000?style=flat&logo=youtube&logoColor=%23FF0000&color=%23FF0000)](https://www.youtube.com/watch?v=jO3rq93ZRtM)
+![Static Badge](https://img.shields.io/badge/ROS2-Jazzy-%2322314E?style=flat&logo=ros&logoColor=%2322314E&color=%2322314E)
+[![Static Badge](https://img.shields.io/badge/License-GPLv3-%2387C540?style=flat&logo=gplv3&logoColor=%2387C540&color=%2387C540)](/LICENSE)
 
 **ivS-Graphs** is inspired by [LiDAR iS-Graphs](https://www.arxiv.org/abs/2408.01737)  and extends [vS-graphs](https://github.com/snt-arg/visual_sgraphs) by integrating architecural Building Information Modelling (**BIM**) with an **optimizable 3D scene graphs**, enhancing mapping and localization accuracy through scene understanding which enables construction monitoring. 
 
