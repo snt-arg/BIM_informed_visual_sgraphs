@@ -1,6 +1,10 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
  *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
  *
@@ -56,7 +60,7 @@ namespace ORB_SLAM3
                                      int nIterations = 5, bool *pbStopFlag = NULL, const unsigned long nLoopKF = 0,
                                      const bool bRobust = true, double markerImpact = 0.1);
         void static AGraphBundleAdjustment(const std::vector<KeyFrame *> &vpKF, const std::vector<MapPoint *> &vpMP,
-                                     const std::vector<Marker *> &vpMarkers, const std::vector<Plane *> &vpPlanes,
+                                     const std::vector<Marker *> &vpMarkers, std::vector<Plane *> &vpPlanes,
                                      const std::vector<Door *> &vpDoors, const std::vector<Room *> &vpRooms, 
                                      const std::vector<Plane *> &bimWalls, int nIterations = 5, bool *pbStopFlag = NULL, const unsigned long nLoopKF = 0,
                                      const bool bRobust = true, double markerImpact = 0.1);
@@ -142,7 +146,11 @@ namespace ORB_SLAM3
         void static InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vector3d &ba, float priorG = 1e2, float priorA = 1e6);
         void static InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale);
         
+        static Eigen::Matrix4d GetBIMToDetectedTransform();
         
+        // Store the transform as static member
+        static Eigen::Matrix4d s_T_bim_to_detected;
+
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     };
 

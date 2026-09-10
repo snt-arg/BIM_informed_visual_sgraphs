@@ -23,6 +23,8 @@ Thirdparty/g2o/build/
 Thirdparty/g2o/lib/
 Vocabulary/ORBvoc.txt
 build/
+install/
+log/
 
 lib/
 

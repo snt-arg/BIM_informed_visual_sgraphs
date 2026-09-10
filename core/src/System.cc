@@ -1,9 +1,13 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
- * 
+ *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
- * 
+ *
  * Original Copyright (C) 2014-2021 University of Zaragoza:
  * Raúl Mur-Artal, Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez,
  * José M.M. Montiel, and Juan D. Tardós.
@@ -1554,6 +1558,7 @@ namespace ORB_SLAM3
 
     bool System::SaveMap(const string &filename)
     {
+        std::cout << "Saving the map to file " << filename << std::endl;
         mStrSaveAtlasToFile = filename;
         if (!mStrSaveAtlasToFile.empty())
         {

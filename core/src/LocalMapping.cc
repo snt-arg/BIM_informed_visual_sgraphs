@@ -1,9 +1,13 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
- * 
+ *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
- * 
+ *
  * Original Copyright (C) 2014-2021 University of Zaragoza:
  * Raúl Mur-Artal, Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez,
  * José M.M. Montiel, and Juan D. Tardós.
@@ -26,6 +30,7 @@
 #include "Optimizer.h"
 #include "Converter.h"
 #include "GeometricTools.h"
+#include "bim_integration.h"
 
 #include <mutex>
 #include <chrono>
@@ -155,22 +160,23 @@ namespace ORB_SLAM3
                                                              SystemParams::GetParams()->markers.impact);
                             b_doneLBA = true;
                         }
-                        // **NEW: Check if we should run BIM-informed optimization**
                         static auto lastBIMOptTime = std::chrono::steady_clock::now();
                         auto currentTime = std::chrono::steady_clock::now();
                         auto timeSinceLastBIM = std::chrono::duration_cast<std::chrono::seconds>(currentTime - lastBIMOptTime).count();
                         
-                        bool runWithAgraph = true;
-                        // Run BIM optimization every 5 seconds (adjust as needed)
-                        if (runWithAgraph && timeSinceLastBIM >= 5 && HasSufficientBIMData())
+                        bool runWithAgraph = ORB_SLAM3::runAgraph;
+                        // Run BIM optimization every 10 seconds (adjust as needed)
+                        if (runWithAgraph && timeSinceLastBIM >= 10 && HasSufficientBIMData())
                         {
                             std::cout << "Running BIM-informed optimization..." << std::endl;
-                            
+
                             // Safety checks
-                            if (mpAtlas->KeyFramesInMap() >= 5 && 
+                            if (mpAtlas->KeyFramesInMap() >= 5 &&
                                 mpAtlas->GetCurrentMap()->GetAllMapPoints().size() >= 50 &&
                                 !mpAtlas->GetBIMDatabase().GetWallsBIM().empty())
                             {
+                                // [TIMING] OPT timer is now inside AGraphBundleAdjustment (Optimizer.cc),
+                                // wrapping only initializeOptimization() + optimize() to isolate solver time.
                                 try {
                                     Optimizer::GlobalAGraphBundleAdjustment(
                                         mpAtlas,

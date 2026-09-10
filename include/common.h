@@ -1,6 +1,10 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
  *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
  *
@@ -88,6 +92,7 @@
 
 // This file is created automatically, see here http://wiki.ros.org/ROS/Tutorials/CreatingMsgAndSrv#Creating_a_srv
 #include <vs_graphs/srv/save_map.hpp>
+#include <vs_graphs/srv/save_transform.hpp>
 
 // Transformation process
 #include <pcl_ros/transforms.hpp>
@@ -199,6 +204,10 @@ void clearKFClsClouds(std::vector<ORB_SLAM3::KeyFrame *>);
 void saveMapService(
     std::shared_ptr<vs_graphs::srv::SaveMap::Request> request,
     std::shared_ptr<vs_graphs::srv::SaveMap::Response> response);
+
+void saveTransformService(
+    std::shared_ptr<vs_graphs::srv::SaveTransform::Request> request,
+    std::shared_ptr<vs_graphs::srv::SaveTransform::Response> response);
 
 void saveTrajectoryService(
     std::shared_ptr<vs_graphs::srv::SaveMap::Request> request,

@@ -1,9 +1,13 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
- * 
+ *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
- * 
+ *
  * Original Copyright (C) 2014-2021 University of Zaragoza:
  * Raúl Mur-Artal, Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez,
  * José M.M. Montiel, and Juan D. Tardós.
@@ -28,7 +32,9 @@
 #include "vertex_plane.h"
 #include "visualization_local_ba.h"
 #include <lsqcpp/lsqcpp.hpp>
-
+#include "bim_integration.h"
+#include <chrono>
+#include <vs_graphs/srv/save_transform.hpp>
 
 #include <mutex>
 #include <complex>
@@ -53,8 +59,20 @@ namespace ORB_SLAM3
     static int g_firstDetectedPlaneId = -1;
     static int g_secondDetectedPlaneId = -1;
 
-    static int g_BIM_wallId_1 = 1;   // Evale: 1   Uni3:  Uni4: 110
-    static int g_BIM_wallId_2 = 3;   // Evale: 3   Uni3:  Uni4: 3
+    Eigen::Matrix4d Optimizer::s_T_bim_to_detected = Eigen::Matrix4d::Identity();
+    
+    Eigen::Matrix4d Optimizer::GetBIMToDetectedTransform() {
+        return s_T_bim_to_detected;
+    }
+
+    int BIM_wallId_1 = 0;
+    int BIM_wallId_2 = 0;
+    bool runAgraph = true;
+    bool XYZcoord = false;
+    bool justInitialAlignment = false;
+
+    int g_BIM_wallId_1 = 0;
+    int g_BIM_wallId_2 = 0;
 
     // static bool g_LOCALfirstPlaneMatched = false;
     // static bool g_LOCALsecondPlaneMatched = false;
@@ -62,68 +80,125 @@ namespace ORB_SLAM3
     // static int g_LOCALfirstDetectedPlaneId = -1;
     // static int g_LOCALsecondDetectedPlaneId = -1;
 
-    // **NEW: Static variables for LOCAL matched planes**
     static std::vector<Plane*> g_localMatchedPlanes;
     static std::mutex g_localMatchedPlanesMutex;
 
     // NEW: Initial alignment completion state
     static bool g_initialAlignmentComplete = false;
 
-    // **STATIC associations vector - persists between function calls**
     static std::vector<std::pair<Plane*, Plane*>> g_associations;
 
-    // **NEW: Global storage for optimized KeyFrames**
+    // Optimized KeyFrame poses, exposed for post-optimization visualization
     static std::vector<KeyFrame*> g_optimizedKeyFrames;
     static std::mutex g_optimizedKeyFramesMutex;
     
-    // **NEW: Function to get optimized KeyFrames (thread-safe) - STANDALONE FUNCTION**
     std::vector<KeyFrame*> GetOptimizedKeyFrames() {
         std::lock_guard<std::mutex> lock(g_optimizedKeyFramesMutex);
         return g_optimizedKeyFrames; // Returns a copy
     }
 
-     // **NEW: Global storage for optimized KeyFrames**
+    // KeyFrame poses captured before optimization, for before/after comparison
     static std::vector<KeyFrame*> g_BEFOREoptimizedKeyFrames;
     static std::mutex g_BEFOREoptimizedKeyFramesMutex;
     
-    // **NEW: Function to get optimized KeyFrames (thread-safe) - STANDALONE FUNCTION**
     std::vector<KeyFrame*> GetBEFOREOptimizedKeyFrames() {
         std::lock_guard<std::mutex> lock(g_BEFOREoptimizedKeyFramesMutex);
         return g_BEFOREoptimizedKeyFrames; // Returns a copy
     }
 
-    // **Struct for Optimization Error Calculation**
+    //
+    // --- ALTERNATIVE: original 7-DOF SE(3) parameterization (kept for reference) ---
+    // xval = (qx, qy, qz, qw, tx, ty, tz) — allows out-of-plane 3D rotation.
+    // Known issue: with rotated BIM wall normals (~5°+), solver finds a spurious Y-axis
+    // tilt instead of the correct XY-plane rotation, causing post-alignment check to fail.
+    //
+    // struct PlaneError {
+    //     static constexpr bool ComputesJacobian = false;
+    //     std::vector<Eigen::Vector4d> source_planes;
+    //     std::vector<Eigen::Vector4d> target_planes;
+    //     PlaneError() = default;
+    //     PlaneError(const std::vector<Eigen::Vector4d>& source, const std::vector<Eigen::Vector4d>& target)
+    //         : source_planes(source), target_planes(target) {}
+    //     template<typename Scalar, int Inputs, int Outputs>
+    //     void operator()(const Eigen::Matrix<Scalar, Inputs, 1>& xval,
+    //                     Eigen::Matrix<Scalar, Outputs, 1>& fval) const {
+    //         Eigen::Quaternion<Scalar> rotation(xval(3), xval(0), xval(1), xval(2));
+    //         Eigen::Matrix<Scalar, 3, 1> translation(xval(4), xval(5), xval(6));
+    //         rotation.normalize();
+    //         fval.resize(source_planes.size() * 4);
+    //         for (size_t i = 0; i < source_planes.size(); ++i) {
+    //             Eigen::Matrix<Scalar, 4, 1> s_params = source_planes[i].template cast<Scalar>();
+    //             Eigen::Matrix<Scalar, 4, 1> a_params = target_planes[i].template cast<Scalar>();
+    //             Eigen::Matrix<Scalar, 3, 1> transformed_normal_a = rotation * a_params.template head<3>();
+    //             Eigen::Matrix<Scalar, 3, 1> normal_s = s_params.template head<3>();
+    //             Scalar transformed_distance_a = -transformed_normal_a.dot(translation) + a_params(3);
+    //             Scalar distance_s = s_params(3);
+    //             fval.template segment<3>(i * 4) = transformed_normal_a - normal_s;
+    //             fval(i * 4 + 3) = transformed_distance_a - distance_s;
+    //         }
+    //     }
+    // };
+    // SE(3) initial guess: initialGuess << 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0;  (7 values)
+    // SE(3) result extraction:
+    //   Eigen::Quaterniond q(result.xval(3), result.xval(0), result.xval(1), result.xval(2));
+    //   q.normalize();
+    //   Eigen::Vector3d t(result.xval(4), result.xval(5), result.xval(6));
+    //   T.block<3,3>(0,0) = q.toRotationMatrix(); T.block<3,1>(0,3) = t;
+    // --- END SE(3) alternative ---
+
+    // 3-DOF SE(2) parameterization: xval = (theta, tx, tz) for XYZcoord=false
+    // or (theta, tx, ty) for XYZcoord=true.
+    // theta is the rotation angle around the vertical axis (Y for ZXY, Z for XYZ).
+    // This constrains the solver to pure in-plane rigid body motion.
     struct PlaneError {
         static constexpr bool ComputesJacobian = false;
 
         std::vector<Eigen::Vector4d> source_planes;
         std::vector<Eigen::Vector4d> target_planes;
+        bool xyz_coord;
 
-        // **Default Constructor**
-        PlaneError() = default;  
+        PlaneError() = default;
 
-        // **Parameterized Constructor**
-        PlaneError(const std::vector<Eigen::Vector4d>& source, const std::vector<Eigen::Vector4d>& target)
-            : source_planes(source), target_planes(target) {}
+        PlaneError(const std::vector<Eigen::Vector4d>& source, const std::vector<Eigen::Vector4d>& target, bool xyz)
+            : source_planes(source), target_planes(target), xyz_coord(xyz) {}
 
-        // LSQ Error Function
+        // LSQ Error Function — 3-DOF: xval(0)=theta, xval(1)=t_horiz, xval(2)=t_depth
         template<typename Scalar, int Inputs, int Outputs>
         void operator()(const Eigen::Matrix<Scalar, Inputs, 1>& xval,
                         Eigen::Matrix<Scalar, Outputs, 1>& fval) const {
-            Eigen::Quaternion<Scalar> rotation(xval(3), xval(0), xval(1), xval(2));
-            Eigen::Matrix<Scalar, 3, 1> translation(xval(4), xval(5), xval(6));
-            rotation.normalize();
+            Scalar theta = xval(0);
+            Scalar c = cos(theta);
+            Scalar s = sin(theta);
 
-            fval.resize(source_planes.size() * 4); // 3 for normal error + 1 for distance error
+            // Build 3D rotation matrix: rotation around vertical axis only
+            // XYZcoord=false: vertical=Y, horizontal plane is X-Z → R = Ry(theta)
+            // XYZcoord=true:  vertical=Z, horizontal plane is X-Y → R = Rz(theta)
+            Eigen::Matrix<Scalar, 3, 3> R;
+            Eigen::Matrix<Scalar, 3, 1> t;
+            if (xyz_coord) {
+                // Rz(theta): rotates X-Y plane
+                R <<  c, -s, Scalar(0),
+                      s,  c, Scalar(0),
+                      Scalar(0), Scalar(0), Scalar(1);
+                t << xval(1), xval(2), Scalar(0);
+            } else {
+                // Ry(theta): rotates X-Z plane
+                R <<  c, Scalar(0),  s,
+                      Scalar(0), Scalar(1), Scalar(0),
+                     -s, Scalar(0),  c;
+                t << xval(1), Scalar(0), xval(2);
+            }
+
+            fval.resize(source_planes.size() * 4);
 
             for (size_t i = 0; i < source_planes.size(); ++i) {
                 Eigen::Matrix<Scalar, 4, 1> s_params = source_planes[i].template cast<Scalar>();
                 Eigen::Matrix<Scalar, 4, 1> a_params = target_planes[i].template cast<Scalar>();
 
-                Eigen::Matrix<Scalar, 3, 1> transformed_normal_a = rotation * a_params.template head<3>();
+                Eigen::Matrix<Scalar, 3, 1> transformed_normal_a = R * a_params.template head<3>();
                 Eigen::Matrix<Scalar, 3, 1> normal_s = s_params.template head<3>();
 
-                Scalar transformed_distance_a = -transformed_normal_a.dot(translation) + a_params(3);
+                Scalar transformed_distance_a = -transformed_normal_a.dot(t) + a_params(3);
                 Scalar distance_s = s_params(3);
 
                 fval.template segment<3>(i * 4) = transformed_normal_a - normal_s;
@@ -137,7 +212,8 @@ namespace ORB_SLAM3
         const Plane* detectedPlane1, const Plane* detectedPlane2) {
         
         std::cout << "  → Computing transformation from BIM walls to detected planes using LSQCPP..." << std::endl;
-        
+        auto t_start = std::chrono::high_resolution_clock::now();
+
         // Get plane equations
         g2o::Plane3D bim1_eq = bimWall1->getGlobalEquation();
         g2o::Plane3D bim3_eq = bimWall3->getGlobalEquation();
@@ -149,13 +225,17 @@ namespace ORB_SLAM3
         std::cout << "    Detected #1 (original): [" << det1_eq.coeffs().transpose() << "]" << std::endl;
         std::cout << "    Detected #2 (original): [" << det2_eq.coeffs().transpose() << "]" << std::endl;
         
-        // **MODIFY DETECTED PLANE NORMALS: Force Y component to 0**
         Eigen::Vector4d det1_modified_coeffs = det1_eq.coeffs();
         Eigen::Vector4d det2_modified_coeffs = det2_eq.coeffs();
         
         // Set Y component of normals to 0
-        det1_modified_coeffs(1) = 0.0;  // Set Y component to 0
-        det2_modified_coeffs(1) = 0.0;  // Set Y component to 0
+        if (ORB_SLAM3::XYZcoord) {
+            det1_modified_coeffs(2) = 0.0;  // For XYZ
+            det2_modified_coeffs(2) = 0.0;  // For XYZ
+        }else {
+            det1_modified_coeffs(1) = 0.0;  // For Z-X-Y
+            det2_modified_coeffs(1) = 0.0;  // For Z-X-Y
+        }
         
         // Renormalize the normals after modification
         Eigen::Vector3d det1_normal = det1_modified_coeffs.head<3>();
@@ -168,8 +248,6 @@ namespace ORB_SLAM3
         det1_modified_coeffs.head<3>() = det1_normal;
         det2_modified_coeffs.head<3>() = det2_normal;
         
-        std::cout << "    Detected #1 (modified): [" << det1_modified_coeffs.transpose() << "]" << std::endl;
-        std::cout << "    Detected #2 (modified): [" << det2_modified_coeffs.transpose() << "]" << std::endl;
         
         // Prepare data for optimization using modified plane equations
         std::vector<Eigen::Vector4d> source_planes;
@@ -180,46 +258,53 @@ namespace ORB_SLAM3
         target_planes.push_back(det1_modified_coeffs);  // Use modified version
         target_planes.push_back(det2_modified_coeffs);  // Use modified version
         
-        // Rest of the function remains the same...
-        PlaneError plane_error(source_planes, target_planes);
-        
+        // 3-DOF SE(2) optimization: (theta, t_horiz, t_depth)
+        PlaneError plane_error(source_planes, target_planes, ORB_SLAM3::XYZcoord);
+
         lsqcpp::LeastSquaresAlgorithm<
             double, -1, -1,
-            PlaneError, 
-            lsqcpp::GaussNewtonMethod<lsqcpp::DenseSVDSolver>, 
-            lsqcpp::ArmijoBacktracking, 
+            PlaneError,
+            lsqcpp::GaussNewtonMethod<lsqcpp::DenseSVDSolver>,
+            lsqcpp::ArmijoBacktracking,
             lsqcpp::CentralDifferences> optimizer;
-        
+
         optimizer.setObjective(plane_error);
-        
-        Eigen::VectorXd initialGuess(7);
-        initialGuess << 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0;
-        
+
+        Eigen::VectorXd initialGuess(3);
+        initialGuess << 0.0, 0.0, 0.0;  // theta=0, tx=0, tz=0
+
         optimizer.setMaximumIterations(100);
         optimizer.setMinimumGradientLength(1e-5);
         optimizer.setMinimumStepLength(1e-5);
         optimizer.setVerbosity(1);
-        
-        std::cout << "    → Starting LSQCPP optimization with Y-zeroed normals..." << std::endl;
-        
+
         auto result = optimizer.minimize(initialGuess);
-        
-        Eigen::Quaterniond optimized_rotation(result.xval(3), result.xval(0), result.xval(1), result.xval(2));
-        optimized_rotation.normalize();
-        Eigen::Vector3d optimized_translation(result.xval(4), result.xval(5), result.xval(6));
-        
+
+        double theta = result.xval(0);
+        double c = std::cos(theta);
+        double s = std::sin(theta);
+
         Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
-        T.block<3,3>(0,0) = optimized_rotation.toRotationMatrix();
-        T.block<3,1>(0,3) = optimized_translation;
+        if (ORB_SLAM3::XYZcoord) {
+            // Rz(theta)
+            T(0,0) =  c;  T(0,1) = -s;
+            T(1,0) =  s;  T(1,1) =  c;
+            T(0,3) = result.xval(1);
+            T(1,3) = result.xval(2);
+        } else {
+            // Ry(theta)
+            T(0,0) =  c;  T(0,2) =  s;
+            T(2,0) = -s;  T(2,2) =  c;
+            T(0,3) = result.xval(1);
+            T(2,3) = result.xval(2);
+        }
         
         double rotation_angle = std::acos(std::clamp((T.block<3,3>(0,0).trace() - 1.0) / 2.0, -1.0, 1.0)) * 180.0 / M_PI;
-        double translation_magnitude = optimized_translation.norm();
+        double translation_magnitude = T.block<3,1>(0,3).norm();
         
-        std::cout << "    → Optimization completed with Y-zeroed normals:" << std::endl;
-        std::cout << "      Final error: " << result.fval << std::endl;
-        std::cout << "      Rotation angle: " << rotation_angle << "°" << std::endl;
-        std::cout << "      Translation magnitude: " << translation_magnitude << " units" << std::endl;
-        
+        auto t_end = std::chrono::high_resolution_clock::now();
+        double elapsed_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+
         return T;
     }
 
@@ -230,13 +315,8 @@ namespace ORB_SLAM3
         double association_threshold,
         double centroid_distance_threshold) {
         
-        std::cout << "\n=== BIM-Detected Plane Data Association ===" << std::endl;
         
-        std::cout << "  - Current associations count: " << g_associations.size() << std::endl;
-        std::cout << "  - Plane equation threshold: " << association_threshold << std::endl;
-        std::cout << "  - Centroid distance threshold: " << centroid_distance_threshold << " meters" << std::endl;
         
-        // **TRACK WHICH DETECTED PLANES ARE ALREADY USED (NOT BIM WALLS)**
         std::set<int> usedDetectedPlaneIds;
         for (const auto& assoc : g_associations) {
             if (assoc.second) { // detected plane
@@ -244,7 +324,6 @@ namespace ORB_SLAM3
             }
         }
         
-        // **CLEANUP: Remove invalid associations (detected planes that no longer exist)**
         auto assoc_it = g_associations.begin();
         while (assoc_it != g_associations.end()) {
             if (assoc_it->second) { // Check detected plane
@@ -259,10 +338,6 @@ namespace ORB_SLAM3
                 }
                 
                 if (!detectedPlaneExists) {
-                    std::cout << "  - Removing invalid association: BIM Wall #" 
-                            << (assoc_it->first ? assoc_it->first->getBIMId() : -1)
-                            << " ↔ Detected Plane #" << assoc_it->second->getId() 
-                            << " (plane disappeared)" << std::endl;
                     
                     // Remove from used set
                     usedDetectedPlaneIds.erase(assoc_it->second->getId());
@@ -277,19 +352,14 @@ namespace ORB_SLAM3
             }
         }
         
-        // **PROCESS ALL BIM WALLS (ALLOW MULTIPLE ASSOCIATIONS PER BIM WALL)**
         for (const auto& bimWall : vpBIMWalls) {
             if (!bimWall) continue;
             
-            std::cout << "  → Processing BIM Wall #" << bimWall->getBIMId() << std::endl;
             
-            // **NO SKIP CHECK FOR BIM WALLS - ALWAYS PROCESS**
             
-            // **GET BIM WALL PROPERTIES**
             Eigen::Vector3f bim_centroid = bimWall->getCentroid();
             g2o::Plane3D bim_plane = bimWall->getGlobalEquation();
             
-            // **COLLECT ALL VALID CANDIDATES FOR THIS BIM WALL**
             std::vector<std::pair<Plane*, double>> validCandidates;
             
             // Find ALL matching detected planes for this BIM wall
@@ -297,14 +367,10 @@ namespace ORB_SLAM3
                 if (!detectedPlane || detectedPlane->getPlaneType() == Plane::planeVariant::UNDEFINED)
                     continue;
                 
-                // **SKIP DETECTED PLANES ALREADY USED (KEY CHANGE)**
                 if (usedDetectedPlaneIds.find(detectedPlane->getId()) != usedDetectedPlaneIds.end()) {
-                    std::cout << "    - Skipping Detected Plane #" << detectedPlane->getId() 
-                            << " (already associated)" << std::endl;
                     continue;
                 }
                 
-                // **CALCULATE PLANE EQUATION DISTANCE**
                 g2o::Plane3D detected_plane_eq = detectedPlane->getGlobalEquation();
                 Eigen::Vector3d error = bim_plane.ominus(detected_plane_eq);
                 Eigen::Matrix3d cov = Eigen::Matrix3d::Identity();
@@ -314,45 +380,43 @@ namespace ORB_SLAM3
                     plane_distance = sqrt(error.transpose() * cov * error);
                 }
                 
-                // **CALCULATE CENTROID DISTANCE**
                 Eigen::Vector3f detected_centroid = detectedPlane->getCentroid();
                 double centroid_distance = (bim_centroid - detected_centroid).cast<double>().norm();
                 
-                std::cout << "      - vs Detected Plane #" << detectedPlane->getId() << ":" << std::endl;
-                std::cout << "        Plane distance: " << plane_distance << std::endl;
-                std::cout << "        Centroid distance: " << centroid_distance << " m" << std::endl;
+                Eigen::Vector3d centroid_diff = (bim_centroid - detected_centroid).cast<double>();
+                Eigen::Vector3d detected_normal = detectedPlane->getGlobalEquation().normal().normalized();
+
+                double d_parallel = std::abs(centroid_diff.dot(detected_normal)); // parallel to the normal
+                double d_total = centroid_diff.norm();
+                double d_perp = std::sqrt(d_total * d_total - d_parallel * d_parallel); // perpendicular to the normal
+                double d_percentage = d_perp / d_total;
+
                 
-                // **COMBINED SCORING FUNCTION**
                 bool plane_criterion = (plane_distance < association_threshold);
                 bool centroid_criterion = (centroid_distance < centroid_distance_threshold);
+                // bool centroid_criterion = (d_percentage > 0.9);
+
                 
                 if (plane_criterion && centroid_criterion) {
-                    // **WEIGHTED COMBINED SCORE**
-                    double normalized_plane_dist = plane_distance / association_threshold;
-                    double normalized_centroid_dist = centroid_distance / centroid_distance_threshold;
+                    // double normalized_plane_dist = plane_distance / association_threshold;
+                    // double normalized_centroid_dist = centroid_distance / centroid_distance_threshold;
                     
-                    // Weight factors
+                    // // Weight factors
                     double plane_weight = 0.7;      // 70% weight on plane equation
                     double centroid_weight = 0.3;   // 30% weight on centroid distance
                     
-                    double combined_score = plane_weight * normalized_plane_dist + 
-                                        centroid_weight * normalized_centroid_dist;
+                    double combined_score = plane_weight * plane_distance + 
+                                        centroid_weight * d_perp;
+
                     
-                    std::cout << "        Combined score: " << combined_score 
-                            << " (normalized: plane=" << normalized_plane_dist 
-                            << ", centroid=" << normalized_centroid_dist << ")" << std::endl;
-                    std::cout << "        ✓ Valid candidate!" << std::endl;
-                    
-                    // **ADD TO VALID CANDIDATES LIST**
                     validCandidates.push_back(std::make_pair(detectedPlane, combined_score));
-                    
+                    // print plane_distance and centroid_distance
+
                 } else {
-                    std::cout << "        ✗ Failed criteria - plane: " << plane_criterion 
-                            << ", centroid: " << centroid_criterion << std::endl;
+                    // print id
                 }
             }
             
-            // **PROCESS ALL VALID CANDIDATES FOR THIS BIM WALL**
             if (!validCandidates.empty()) {
                 // Sort candidates by combined score (best first)
                 std::sort(validCandidates.begin(), validCandidates.end(), 
@@ -360,45 +424,28 @@ namespace ORB_SLAM3
                             return a.second < b.second; // Lower score is better
                         });
                 
-                std::cout << "    ✓ MULTIPLE ASSOCIATIONS for BIM Wall #" << bimWall->getBIMId() << ":" << std::endl;
                 
-                // **CREATE ASSOCIATIONS FOR ALL VALID CANDIDATES**
                 for (const auto& candidate : validCandidates) {
                     Plane* detectedPlane = candidate.first;
                     double combined_score = candidate.second;
                     
-                    // **DOUBLE-CHECK: Ensure detected plane is not already used**
                     if (usedDetectedPlaneIds.find(detectedPlane->getId()) != usedDetectedPlaneIds.end()) {
                         std::cout << "      ⚠️  Detected Plane #" << detectedPlane->getId() 
                                 << " was used by another BIM wall during this iteration - skipping" << std::endl;
                         continue;
                     }
                     
-                    // **Save each valid association**
                     g_associations.push_back(std::make_pair(bimWall, detectedPlane));
-                    usedDetectedPlaneIds.insert(detectedPlane->getId()); // **MARK AS USED**
+                    usedDetectedPlaneIds.insert(detectedPlane->getId());
                     
-                    std::cout << "      → NEW ASSOCIATION: BIM Wall #" << bimWall->getBIMId() 
-                            << " ↔ Detected Plane #" << detectedPlane->getId() << std::endl;
-                    std::cout << "        Combined score: " << combined_score << std::endl;
                 }
                 
-                std::cout << "    → Total associations created for this BIM wall: " << validCandidates.size() << std::endl;
                 
             } else {
-                std::cout << "    ✗ No suitable matches found for BIM Wall #" << bimWall->getBIMId() << std::endl;
-                std::cout << "      → Either plane distance > " << association_threshold 
-                        << " OR centroid distance > " << centroid_distance_threshold << " m" << std::endl;
             }
         }
+
         
-        std::cout << "\n=== Final Multiple Association Summary ===" << std::endl;
-        std::cout << "  - Total BIM walls processed: " << vpBIMWalls.size() << std::endl;
-        std::cout << "  - Total associations: " << g_associations.size() << std::endl;
-        std::cout << "  - Plane equation threshold: " << association_threshold << std::endl;
-        std::cout << "  - Centroid distance threshold: " << centroid_distance_threshold << " m" << std::endl;
-        
-        // **GROUP ASSOCIATIONS BY BIM WALL FOR SUMMARY**
         std::map<int, std::vector<std::pair<int, double>>> bimToDetectedMap;
         for (const auto& assoc : g_associations) {
             if (assoc.first && assoc.second) {
@@ -413,17 +460,11 @@ namespace ORB_SLAM3
             }
         }
         
-        std::cout << "\n=== Association Groups ===" << std::endl;
         for (const auto& group : bimToDetectedMap) {
-            std::cout << "  🏗️  BIM Wall #" << group.first << " ↔ ";
             for (size_t i = 0; i < group.second.size(); ++i) {
                 if (i > 0) std::cout << ", ";
-                std::cout << "Detected #" << group.second[i].first 
-                        << " (dist: " << std::fixed << std::setprecision(3) << group.second[i].second << ")";
             }
-            std::cout << " (" << group.second.size() << " planes)" << std::endl;
         }
-        std::cout << "=== End Multiple Association ===" << std::endl;
     }
    
    void PerformBIMDetectedDataAssociation(
@@ -431,12 +472,6 @@ namespace ORB_SLAM3
         const std::vector<Plane*>& allPlanesVec,
         double association_threshold,
         double centroid_distance_threshold) {
-        
-        std::cout << "\n=== BIM-Detected Plane Data Association ===" << std::endl;
-        
-        std::cout << "  - Current associations count: " << g_associations.size() << std::endl;
-        std::cout << "  - Plane equation threshold: " << association_threshold << std::endl;
-        std::cout << "  - Centroid distance threshold: " << centroid_distance_threshold << " meters" << std::endl;
         
         // Track which detected planes are already associated
         std::set<int> usedDetectedPlaneIds;
@@ -450,7 +485,6 @@ namespace ORB_SLAM3
         for (const auto& bimWall : vpBIMWalls) {
             if (!bimWall) continue;
             
-            std::cout << "  → Processing BIM Wall #" << bimWall->getBIMId() << std::endl;
             
             // Check if this BIM wall is already in associations
             bool alreadyAssociated = false;
@@ -458,7 +492,6 @@ namespace ORB_SLAM3
             while (assoc_it != g_associations.end()) {
                 if (assoc_it->first && assoc_it->first->getBIMId() == bimWall->getBIMId()) {
                     
-                    // **CHECK IF THE DETECTED PLANE STILL EXISTS**
                     bool detectedPlaneExists = false;
                     if (assoc_it->second) {
                         for (const auto& detectedPlane : allPlanesVec) {
@@ -473,22 +506,14 @@ namespace ORB_SLAM3
                     
                     if (detectedPlaneExists) {
                         alreadyAssociated = true;
-                        std::cout << "    - Already associated with Detected Plane #" 
-                                << assoc_it->second->getId() << std::endl;
                         ++assoc_it; // Move to next association
                     } else {
-                        // **DETECTED PLANE NO LONGER EXISTS - REMOVE ASSOCIATION**
-                        std::cout << "    - Previous association with Detected Plane #" 
-                                << (assoc_it->second ? assoc_it->second->getId() : -1) 
-                                << " is invalid (plane disappeared)" << std::endl;
                         
                         // Remove this association from usedDetectedPlaneIds if it was there
                         if (assoc_it->second) {
                             usedDetectedPlaneIds.erase(assoc_it->second->getId());
                         }
                         
-                        // **ACTUALLY REMOVE THE INVALID ASSOCIATION**
-                        std::cout << "    - Removing invalid association from g_associations" << std::endl;
                         assoc_it = g_associations.erase(assoc_it); // erase() returns iterator to next element
                     }
                 } else {
@@ -500,11 +525,9 @@ namespace ORB_SLAM3
                 continue; // Skip this BIM wall - it has a valid association
             }
             
-            // **GET BIM WALL CENTROID**
             Eigen::Vector3f bim_centroid = bimWall->getCentroid();
             g2o::Plane3D bim_plane = bimWall->getGlobalEquation();
             
-            // std::cout << "    - Searching for best match..." << std::endl;
             
             double best_combined_score = std::numeric_limits<double>::max();
             Plane* best_detected_plane = nullptr;
@@ -521,7 +544,6 @@ namespace ORB_SLAM3
                     continue;
                 }
                 
-                // **CALCULATE PLANE EQUATION DISTANCE**
                 g2o::Plane3D detected_plane_eq = detectedPlane->getGlobalEquation();
                 Eigen::Vector3d error = bim_plane.ominus(detected_plane_eq);
                 Eigen::Matrix3d cov = Eigen::Matrix3d::Identity();
@@ -531,21 +553,14 @@ namespace ORB_SLAM3
                     plane_distance = sqrt(error.transpose() * cov * error);
                 }
                 
-                // **CALCULATE CENTROID DISTANCE**
                 Eigen::Vector3f detected_centroid = detectedPlane->getCentroid();
                 double centroid_distance = (bim_centroid - detected_centroid).cast<double>().norm();
                 
-                // std::cout << "      - vs Detected Plane #" << detectedPlane->getId() << ":" << std::endl;
-                // std::cout << "        Plane distance: " << plane_distance << std::endl;
-                // std::cout << "        Centroid distance: " << centroid_distance << " m" << std::endl;
-                // std::cout << "        Detected centroid: [" << detected_centroid.transpose() << "]" << std::endl;
                 
-                // **COMBINED SCORING FUNCTION**
                 bool plane_criterion = (plane_distance < association_threshold);
                 bool centroid_criterion = (centroid_distance < centroid_distance_threshold);
                 
                 if (plane_criterion && centroid_criterion) {
-                    // **WEIGHTED COMBINED SCORE**
                     double normalized_plane_dist = plane_distance / association_threshold;
                     double normalized_centroid_dist = centroid_distance / centroid_distance_threshold;
                     
@@ -556,9 +571,6 @@ namespace ORB_SLAM3
                     double combined_score = plane_weight * normalized_plane_dist + 
                                         centroid_weight * normalized_centroid_dist;
                     
-                    std::cout << "        Combined score: " << combined_score 
-                            << " (normalized: plane=" << normalized_plane_dist 
-                            << ", centroid=" << normalized_centroid_dist << ")" << std::endl;
                     
                     if (combined_score < best_combined_score) {
                         best_combined_score = combined_score;
@@ -567,49 +579,28 @@ namespace ORB_SLAM3
                         best_centroid_distance = centroid_distance;
                     }
                 } else {
-                    // std::cout << "        ✗ Failed criteria - plane: " << plane_criterion 
-                    //         << ", centroid: " << centroid_criterion << std::endl;
                 }
             }
             
             // Check if best match was found
             if (best_detected_plane) {
-                // **Save the new association**
                 g_associations.push_back(std::make_pair(bimWall, best_detected_plane));
                 usedDetectedPlaneIds.insert(best_detected_plane->getId());
                 
-                std::cout << "    ✓ NEW ASSOCIATION: BIM Wall #" << bimWall->getBIMId() 
-                        << " ↔ Detected Plane #" << best_detected_plane->getId() << std::endl;
-                std::cout << "      Final plane distance: " << best_plane_distance << std::endl;
-                std::cout << "      Final centroid distance: " << best_centroid_distance << " m" << std::endl;
-                std::cout << "      Combined score: " << best_combined_score << std::endl;
             } else {
-                std::cout << "    ✗ No suitable match found" << std::endl;
-                std::cout << "      → Either plane distance > " << association_threshold 
-                        << " OR centroid distance > " << centroid_distance_threshold << " m" << std::endl;
             }
         }
         
-        std::cout << "\n=== Final Association Summary ===" << std::endl;
-        std::cout << "  - Total BIM walls processed: " << vpBIMWalls.size() << std::endl;
-        std::cout << "  - Total associations: " << g_associations.size() << std::endl;
-        std::cout << "  - Plane equation threshold: " << association_threshold << std::endl;
-        std::cout << "  - Centroid distance threshold: " << centroid_distance_threshold << " m" << std::endl;
         
         // Print all current associations
-        std::cout << "\n=== Current Associations ===" << std::endl;
         for (const auto& assoc : g_associations) {
             if (assoc.first && assoc.second) {
                 Eigen::Vector3f bim_c = assoc.first->getCentroid();
                 Eigen::Vector3f det_c = assoc.second->getCentroid();
                 double final_centroid_dist = (bim_c - det_c).cast<double>().norm();
                 
-                std::cout << "  ✓ BIM Wall #" << assoc.first->getBIMId() 
-                        << " ↔ Detected Plane #" << assoc.second->getId() 
-                        << " (centroid dist: " << final_centroid_dist << " m)" << std::endl;
             }
         }
-        std::cout << "=== End Data Association ===" << std::endl;
     }
    
  
@@ -655,14 +646,9 @@ namespace ORB_SLAM3
             // Get original centroid
             Eigen::Vector3f original_centroid = bimWall->getCentroid();
             
-            // std::cout << "  → BIM Wall #" << bimWall->getBIMId() << ":" << std::endl;
-            // std::cout << "    Plane Before: [" << original_coeffs.transpose() << "]" << std::endl;
-            // std::cout << "    Centroid Before: [" << original_centroid.transpose() << "]" << std::endl;
             
-            // **TRANSFORM THE PLANE EQUATION using existing function**
             Eigen::Vector4d transformed_coeffs = transform_plane(original_coeffs, transform);
             
-            // **TRANSFORM THE CENTROID using the same approach as transform_plane**
             // Create homogeneous coordinates for centroid: [x, y, z, 1]
             Eigen::Vector4d centroid_homogeneous;
             centroid_homogeneous << original_centroid.cast<double>(), 1.0;
@@ -673,8 +659,12 @@ namespace ORB_SLAM3
             // Extract 3D coordinates (ignore homogeneous coordinate)
             Eigen::Vector3d transformed_centroid = transformed_centroid_homo.head<3>();
             
-            // **FIX THE Y COMPONENT TO 1.5**
-            transformed_centroid.y() = -1.5;
+            // TODO: the 1.5 offset is hardcoded; derive it from wall height instead
+            if (ORB_SLAM3::XYZcoord) {
+                transformed_centroid.z() = 1.5;  // For XYZ
+            }else {
+                transformed_centroid.y() = -1.5;  // For Z-X-Y
+            }
 
             // Create new plane equation
             g2o::Plane3D transformed_eq(transformed_coeffs);
@@ -682,20 +672,15 @@ namespace ORB_SLAM3
             // Update the plane equation
             bimWall->setGlobalEquation(transformed_eq);
             
-            // **UPDATE THE CENTROID**
             bimWall->setCentroid(transformed_centroid.cast<float>());
             
-            // std::cout << "    Plane After:  [" << transformed_coeffs.transpose() << "]" << std::endl;
-            // std::cout << "    Centroid After:  [" << transformed_centroid.transpose() << "]" << std::endl;
         }
         
-        std::cout << "=== All BIM Walls Transformed (Planes + Centroids) ===" << std::endl;
     }
 
     bool CheckBIMAlignment(const Plane* bimWall1, const Plane* bimWall3,
                         const Plane* detectedPlane1, const Plane* detectedPlane2,
                         double threshold) {
-        std::cout << "\n=== Checking BIM Alignment Quality ===" << std::endl;
         
         // Get transformed BIM equations and detected plane equations
         g2o::Plane3D bim1_eq = bimWall1->getGlobalEquation();      // Now transformed
@@ -704,14 +689,6 @@ namespace ORB_SLAM3
         g2o::Plane3D det2_eq = detectedPlane2->getGlobalEquation();
 
         // // print values of det1_eq and det2_eq
-        // std::cout << "    Detected Plane #" << detectedPlane1->getId() << " equation: ["
-        //           << det1_eq.coeffs().transpose() << "]" << std::endl;
-        // std::cout << "    Detected Plane #" << detectedPlane2->getId() << " equation: ["
-        //           << det2_eq.coeffs().transpose() << "]" << std::endl;  
-        // std::cout << "    BIM Wall #" << bimWall1->getBIMId() << " equation: ["
-        //           << bim1_eq.coeffs().transpose() << "]" << std::endl;
-        // std::cout << "    BIM Wall #" << bimWall3->getBIMId() << " equation: ["
-        //           << bim3_eq.coeffs().transpose() << "]" << std::endl;
         
         // Calculate alignment errors using ominus (same as Edge2Planes)
         Eigen::Vector3d error1 = bim1_eq.ominus(det1_eq);  // BIM Wall #1 vs Detected Plane #1
@@ -721,10 +698,6 @@ namespace ORB_SLAM3
         double distance1 = error1.norm();
         double distance2 = error2.norm();
         
-        std::cout << "📏 Alignment distances:" << std::endl;
-        std::cout << "  - BIM Wall #1 ↔ Detected Plane #" << detectedPlane1->getId() << ": " << distance1 << std::endl;
-        std::cout << "  - BIM Wall #3 ↔ Detected Plane #" << detectedPlane2->getId() << ": " << distance2 << std::endl;
-        std::cout << "  - Threshold: " << threshold << std::endl;
         
         bool aligned = (distance1 < threshold) && (distance2 < threshold);
         
@@ -782,11 +755,10 @@ namespace ORB_SLAM3
     }
 
     void Optimizer::AGraphBundleAdjustment (const vector<KeyFrame *> &vpKFs, const vector<MapPoint *> &vpMP,
-                                     const vector<Marker *> &allMarkersVec, const vector<Plane *> &allPlanesVec,
+                                     const vector<Marker *> &allMarkersVec, vector<Plane *> &allPlanesVec,
                                      const vector<Door *> &allDoorsVec, const vector<Room *> &vpRooms, const vector<Plane *> &vpBIMWalls, int nIterations,
                                      bool *pbStopFlag, const unsigned long nLoopKF, const bool bRobust, double markerImpact)
     {
-        std::cout << "Enter in AGraphBundleAdjustment" << std::endl;
         SystemParams *sysParams = SystemParams::GetParams();
         vector<bool> vbNotIncludedMP;
         vbNotIncludedMP.resize(vpMP.size());
@@ -803,7 +775,31 @@ namespace ORB_SLAM3
         g2o::OptimizationAlgorithmLevenberg *solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
         optimizer.setAlgorithm(solver);
         optimizer.setVerbose(false);
-        std::cout << "Optimizer initialized" << std::endl;
+
+        g_BIM_wallId_1 = BIM_wallId_1;
+        g_BIM_wallId_2 = BIM_wallId_2;
+
+        
+        // Filter out horizontal planes (normal close to Z axis)
+        std::vector<Plane*> filteredPlanes;
+        for (const auto& plane : allPlanesVec) {
+            if (!plane) continue;
+            Eigen::Vector3d normal = plane->getGlobalEquation().normal().normalized();
+
+            if (ORB_SLAM3::XYZcoord) {
+                // If normal is NOT close to vertical (Z axis), keep it
+                if (std::abs(normal.z()) < 0.9) { // adjust threshold as needed
+                    filteredPlanes.push_back(plane);
+                }
+            }else {
+                // If normal is NOT close to vertical (Y axis), keep it
+                if (std::abs(normal.y()) < 0.9) { // adjust threshold as needed
+                    filteredPlanes.push_back(plane);
+                }
+            } 
+        }
+
+        allPlanesVec = filteredPlanes;
 
         if (pbStopFlag)
             optimizer.setForceStopFlag(pbStopFlag);
@@ -839,7 +835,6 @@ namespace ORB_SLAM3
         vector<MapPoint *> vpMapPointEdgeStereo;
         vpMapPointEdgeStereo.reserve(nExpectedSize);
 
-        std::cout << "Start vertices" << std::endl;
         // Set KeyFrame vertices (Global Optimization)
         for (size_t i = 0; i < vpKFs.size(); i++)
         {
@@ -1082,34 +1077,10 @@ namespace ORB_SLAM3
                     // adding plane-KF constraints -- is enabled for now
                     if (sysParams->optimization.plane_kf.enabled)
                     {
-                        // std::cout << "Plane KF enabled" << std::endl;
                         ORB_SLAM3::EdgeVertexPlaneProjectSE3KF *e = new ORB_SLAM3::EdgeVertexPlaneProjectSE3KF();
                         e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(pKFi->mnId)));
                         e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(opIdG)));
                         
-                        // // **INCREASE information gain for matched planes**
-                        // double information_gain = sysParams->optimization.plane_kf.information_gain;
-                        
-                        // // If this plane is matched with BIM, make connection MUCH stronger
-                        // if (vpPlane->getBIMId() >= 1 && vpPlane->getBIMId() <= 6) {
-                        //     information_gain *= 1000.0; // Make it 1000x stronger
-                        //     std::cout << "🔥 STRONG Plane-KF edge for matched plane #" << vpPlane->getId() 
-                        //             << " (BIM ID: " << vpPlane->getBIMId() << ")" << std::endl;
-                        // }
-                        // e->setInformation(Eigen::Matrix<double, 3, 3>::Identity() * obs.confidence * information_gain);
-    
-                        // BEFORE CHANGE MIGUEL
-                        // e->setInformation(Eigen::Matrix<double, 3, 3>::Identity() * obs.confidence * sysParams->optimization.plane_kf.information_gain);
-                        // // auto planeKF_information = Eigen::Matrix<double, 3, 3>::Identity() * obs.confidence * sysParams->optimization.plane_kf.information_gain;
-                        // // print Eigen::Matrix<double, 3, 3>::Identity() * obs.confidence * sysParams->optimization.plane_kf.information_gain
-                        // // std::cout << "Plane KF Information Matrix: " << planeKF_information.matrix() << std::endl;
-                        // e->setMeasurement(planeLocalEquation);
-                        // g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
-                        // e->setRobustKernel(rk);
-                        // rk->setDelta(thHuber3D);
-                        // optimizer.addEdge(e);
-
-                        // CHANGE MIGUEL
                         e->setInformation(Eigen::Matrix<double, 3, 3>::Identity() * 10000);
                         e->setMeasurement(planeLocalEquation);
                         optimizer.addEdge(e);
@@ -1118,7 +1089,6 @@ namespace ORB_SLAM3
                     // adding plane-KF constraints with point observations -- is disabled for now
                     if (sysParams->optimization.plane_point.enabled)
                     {
-                        // std::cout << "Plane Point enabled" << std::endl;
                         // get the class index of the plane
                         int clsCloudIdx = Utils::getClassIdFromPlaneType(vpPlane->getPlaneType());
                         if (clsCloudIdx != -1)
@@ -1130,7 +1100,6 @@ namespace ORB_SLAM3
                             e->setInformation(Eigen::Matrix<double, 1, 1>::Identity() * obs.confidence * sysParams->optimization.plane_point.information_gain);
                             auto planeKF_information = Eigen::Matrix<double, 3, 3>::Identity() * obs.confidence * sysParams->optimization.plane_kf.information_gain;
                             // print Eigen::Matrix<double, 3, 3>::Identity() * obs.confidence * sysParams->optimization.plane_kf.information_gain
-                            // std::cout << "Point KF Information Matrix: " << planeKF_information.matrix() << std::endl;
                       
                             e->setMeasurement(obs.Gij);
 
@@ -1339,8 +1308,6 @@ namespace ORB_SLAM3
                                               << " OpIdG: " << firstPlane->getOpIdG() << std::endl;
                                     std::cout << "Detected Plane #" << g_secondDetectedPlaneId 
                                               << " OpIdG: " << detectedPlane->getOpIdG() << std::endl; 
-                                    // std::cout << "BIM Wall #1 OpIdG: " << bimWall->getOpIdG() << std::endl;
-                                    // std::cout << "BIM Wall #3 OpIdG: " << bimWall->getOpIdG() << std::endl;
                                     
                                     goto matching_complete; // Exit all loops
                                 }
@@ -1384,13 +1351,9 @@ namespace ORB_SLAM3
                     
                 if (plane->getId() == g_firstDetectedPlaneId) {
                     detectedPlane1 = plane;
-                    // std::cout << "Detected Plane #0: ID = " << detectedPlane1->getId() 
-                    //         << ", OpIdG = " << detectedPlane1->getOpIdG() << std::endl;
                 }
                 if (plane->getId() == g_secondDetectedPlaneId) {
                     detectedPlane2 = plane;
-                    // std::cout << "Detected Plane #X: ID = " << detectedPlane2->getId() 
-                    //         << ", OpIdG = " << detectedPlane2->getOpIdG() << std::endl;
                 }
             }
         }
@@ -1418,8 +1381,21 @@ namespace ORB_SLAM3
                 detectedPlane1, detectedPlane2 // Target: Detected planes
             );
 
-            // **FIX: Invert the transformation to move BIM walls TO detected planes**
+            std::cout << "🔄 BIM-to-Detected Transformation Matrix:" << std::endl;
+            std::cout << T_bim_to_detected << std::endl;
+            
+            // Extract rotation and translation for analysis (from the INVERTED matrix)
+            Eigen::Matrix3d R1 = T_bim_to_detected.block<3,3>(0,0);
+            Eigen::Vector3d t1 = T_bim_to_detected.block<3,1>(0,3);
+            
+            // Convert to angle-axis for easier interpretation
+            Eigen::AngleAxisd angleAxis1(R1);
+            std::cout << "📐 Rotation: " << angleAxis1.angle() * 180.0 / M_PI << "° around axis [" 
+                    << angleAxis1.axis().transpose() << "]" << std::endl;
+
+            // Invert the transformation to map BIM walls onto detected planes
             T_bim_to_detected = T_bim_to_detected.inverse();
+            s_T_bim_to_detected = T_bim_to_detected;
             
             std::cout << "🔄 BIM-to-Detected Transformation Matrix:" << std::endl;
             std::cout << T_bim_to_detected << std::endl;
@@ -1433,7 +1409,6 @@ namespace ORB_SLAM3
             std::cout << "📐 INVERTED Rotation: " << angleAxis.angle() * 180.0 / M_PI << "° around axis [" 
                     << angleAxis.axis().transpose() << "]" << std::endl;
             
-            // **APPLY  TRANSFORMATION TO ALL BIM WALLS**
             ApplyTransformationToAllBIMWalls(vpBIMWalls, T_bim_to_detected);  // ← THIS IS THE KEY FIX!
             
             // print equation for detectedPlane1, detectedPlane2, bimWall1, bimWall3
@@ -1442,7 +1417,6 @@ namespace ORB_SLAM3
             std::cout << "BIM Wall #1 Equation: " << bimWall1->getGlobalEquation().coeffs().transpose() << std::endl;
             std::cout << "BIM Wall #3 Equation: " << bimWall3->getGlobalEquation().coeffs().transpose() << std::endl;
             
-            // **CHECK IF TRANSFORMATION IS GOOD ENOUGH**
             bool isTransformationGood = CheckBIMAlignment(
                 bimWall1, bimWall3, 
                 detectedPlane1, detectedPlane2,
@@ -1450,11 +1424,10 @@ namespace ORB_SLAM3
             );
             
             if (isTransformationGood) {
-                g_initialAlignmentComplete = true;
+                g_initialAlignmentComplete = true;  
                 // Set plane IDs for matched BIM walls
                 // bimWall1->setId(detectedPlane1->getId()); // Set ID for BIM wall #1
                 // bimWall3->setId(detectedPlane2->getId()); // Set ID for
-                // **NEW: Set BIM IDs for matched detected planes**
                 detectedPlane1->setBIMId(bimWall1->getBIMId()); // Set BIM ID 1 for detected plane #0
                 detectedPlane2->setBIMId(bimWall3->getBIMId()); // Set BIM ID 3 for detected plane #x
                 std::cout << "🎯 BIM transformation successful! Proceeding with edge creation..." << std::endl;
@@ -1463,9 +1436,13 @@ namespace ORB_SLAM3
                 std::cout << "    → Optimization will be skipped this iteration" << std::endl;
                 std::cout << "    → BIM alignment must succeed before optimization can proceed" << std::endl;
                 
-                // **EARLY RETURN - Skip optimization completely**
                 return;
             }
+        }
+
+        if (justInitialAlignment) {
+            std::cout << "=== Initial alignment only - skipping optimization ===" << std::endl;
+            return; // Exit if only initial alignment is requested
         }
         
         if (!g_initialAlignmentComplete) {
@@ -1490,8 +1467,6 @@ namespace ORB_SLAM3
             // Setting the global optimization ID for the BIM wall
             vpBIMWall->setOpIdG(opIdG);
             // pritnt the BIM wall ID and OpIdG
-            // std::cout << "BIM Wall #" << vpBIMWall->getBIMId() 
-            //           << " OpIdG: " << vpBIMWall->getOpIdG() << std::endl;
         }
 
 
@@ -1499,58 +1474,45 @@ namespace ORB_SLAM3
 
         const bool force_walls = true;
 
-        // CREATE EDGES PLANE-TO-BIM 
+        // CREATE EDGES PLANE-TO-BIM
         if (g_initialAlignmentComplete && !vpBIMWalls.empty()) {
-            std::cout << "\n=== Starting BIM-Detected Data Association ===" << std::endl;
 
             // Define plane equation and centroid distance threshold
-            double centroidDistanceThreshold = 3000; // Adjust as needed
-            double planeEquationThreshold = 0.5; // Adjust as needed
+            double centroidDistanceThreshold = 6; // Adjust as needed
+            double planeEquationThreshold = 0.75; // Adjust as needed
             
             // Perform data association
             // PerformBIMDetectedDataAssociation(vpBIMWalls, allPlanesVec, planeEquationThreshold, centroidDistanceThreshold); // threshold can be adjusted
+            // [TIMING][MATCH] measure cost of continuous BIM wall matching
+            size_t nAssocBefore = g_associations.size();
+            auto tMatchStart = std::chrono::steady_clock::now();
             PerformBIMDetectedMultiAssociation(vpBIMWalls, allPlanesVec, planeEquationThreshold, centroidDistanceThreshold); // threshold can be adjusted
-            
-            // **NEW: Print g_associations data BEFORE optimization**
-            std::cout << "\n=== BIM-DETECTED ASSOCIATIONS BEFORE OPTIMIZATION ===" << std::endl;
-            std::cout << "Total associations: " << g_associations.size() << std::endl;
-
-            for (size_t i = 0; i < g_associations.size(); ++i) {
-                const auto& association = g_associations[i];
-                
-                if (association.first && association.second) {
-                    Plane* bimWall = association.first;
-                    Plane* detectedPlane = association.second;
-                    
-                    // Get current plane equations (BEFORE optimization)
-                    g2o::Plane3D bimEquation = bimWall->getGlobalEquation();
-                    g2o::Plane3D detectedEquation = detectedPlane->getGlobalEquation();
-                    
-                    // Calculate alignment error
-                    Eigen::Vector3d error = bimEquation.ominus(detectedEquation);
-                    double distance = error.norm();
-                    
-                    std::cout << "Association #" << i << " (BEFORE):" << std::endl;
-                    std::cout << "  BIM Wall #" << bimWall->getBIMId() << " ↔ Detected Plane #" << detectedPlane->getId() << std::endl;
-                    std::cout << "  BIM equation:      [" << bimEquation.coeffs().transpose() << "]" << std::endl;
-                    std::cout << "  Detected equation: [" << detectedEquation.coeffs().transpose() << "]" << std::endl;
-                    std::cout << "  Alignment distance: " << distance << std::endl;
-                    std::cout << "  Status: " << (distance < 0.5 ? "✅ ALIGNED" : "❌ NOT ALIGNED") << std::endl;
-                    std::cout << std::endl;
-                } else {
-                    std::cout << "Association #" << i << ": ❌ NULL POINTER" << std::endl;
-                }
+            auto tMatchEnd = std::chrono::steady_clock::now();
+            double matchMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tMatchEnd - tMatchStart).count();
+            // signed delta: matching can shrink g_associations when invalid entries are pruned
+            long long nAssocDelta = (long long)g_associations.size() - (long long)nAssocBefore;
+            std::cout << "[TIMING][MATCH] ms=" << matchMs
+                      << " bim_walls=" << vpBIMWalls.size()
+                      << " detected_planes=" << allPlanesVec.size()
+                      << " assoc_delta=" << nAssocDelta
+                      << " total_assoc=" << g_associations.size()
+                      << std::endl;
+            for (size_t iA = nAssocBefore; iA < g_associations.size(); ++iA) {
+                const auto& a = g_associations[iA];
+                int bimId = (a.first ? a.first->getBIMId() : -1);
+                int detId = (a.second ? a.second->getId() : -1);
+                std::cout << "[TIMING][MATCH][NEW_ASSOC] idx=" << iA
+                          << " bim_id=" << bimId
+                          << " detected_id=" << detId
+                          << std::endl;
             }
-
-            std::cout << "=== END ASSOCIATIONS SUMMARY (BEFORE) ===" << std::endl;
+            
     
             
-            // Create edges for all associations        
-            std::cout << "\n=== Creating BIM-Detected Alignment Edges ===" << std::endl;
+            // Create edges for all associations
             
             int edges_created = 0;
             
-            // **ACCESS GLOBAL STATIC ASSOCIATIONS DIRECTLY**
             for (const auto& association : g_associations) {
                 Plane* bimWall = association.first;
                 Plane* detectedPlane = association.second;
@@ -1596,23 +1558,39 @@ namespace ORB_SLAM3
                 g2o::Plane3D bim_eq = bimWall->getGlobalEquation();
                 g2o::Plane3D det_eq = detectedPlane->getGlobalEquation();
                 Eigen::Vector3d error = bim_eq.ominus(det_eq);
-                double distance = error.norm();
+                Eigen::Matrix3d cov = Eigen::Matrix3d::Identity();
+                double plane_distance = sqrt(error.transpose() * cov * error);
                 
-                // Set information weight - stronger for better aligned planes
-                // double information_weight = 1.0 / (distance + 1e-6);
-                // information_weight = std::min(information_weight, 1e6); // Cap the weight
-                // information_weight = std::max(information_weight, 1e2); // Minimum weight
+                // Calculate centroid perpendicular distance
+                Eigen::Vector3f bim_centroid = bimWall->getCentroid();
+                Eigen::Vector3f detected_centroid = detectedPlane->getCentroid();
+                Eigen::Vector3d centroid_diff = (bim_centroid - detected_centroid).cast<double>();
+                Eigen::Vector3d detected_normal = detectedPlane->getGlobalEquation().normal().normalized();
+                double d_parallel = std::abs(centroid_diff.dot(detected_normal));
+                double d_total = centroid_diff.norm();
+                double d_perp = std::sqrt(d_total * d_total - d_parallel * d_parallel);
                 
-                // **MAKE BIM-DETECTED EDGES VERY STRONG** of 10e15
-                double information_weight = 1e15; // Boost constraint strength significantly
+                // Combined score (same as in association function)
+                double plane_weight = 0.7;
+                double centroid_weight = 0.3;
+                double combined_score = plane_weight * plane_distance + centroid_weight * d_perp;
                 
                 std::cout << "  → Edge: BIM Wall #" << bimWall->getBIMId() 
                         << " (OpIdG: " << bimWall->getOpIdG() << ") ↔ Detected Plane #" << detectedPlane->getId()
                         << " (OpIdG: " << detectedPlane->getOpIdG() << ")" << std::endl;
-                std::cout << "    Distance: " << distance << ", Weight: " << information_weight << std::endl;
-                
-                edge->setInformation(Eigen::Matrix3d::Identity() * 1e15);
-                
+                std::cout << "    Combined score: " << combined_score << std::endl;
+
+                // Covariance grows with the matching score (Eq. 7): well-matched pairs (low
+                // score) get a small covariance, and therefore a strong constraint once inverted
+                // into an information matrix; poorly-matched pairs (high score) get a large
+                // covariance and are down-weighted. The score is floored to avoid a singular
+                // covariance as it approaches 0 (near-perfect match).
+                const double kMinMatchingScore = 1e-3;
+                double beta = 1e-3;
+                double safe_score = std::max(combined_score, kMinMatchingScore);
+                Eigen::Matrix3d covariance = Eigen::Matrix3d::Identity() * beta * safe_score;
+                edge->setInformation(covariance.inverse());
+
                 // Add robust kernel to handle potential outliers
                 g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
                 edge->setRobustKernel(rk);
@@ -1622,50 +1600,54 @@ namespace ORB_SLAM3
                 edges_created++;
             }
             
-            std::cout << "=== BIM-Detected Edges Summary ===" << std::endl;
-            std::cout << "  - Total associations available: " << g_associations.size() << std::endl;
-            std::cout << "  - Total edges created: " << edges_created << std::endl;
-            std::cout << "=== Plane-to-BIM Alignment Edges Created ===" << std::endl;
         }
 
         // // Print plane equations BEFORE optimization
-        // std::cout << "\n=== PLANE EQUATIONS BEFORE OPTIMIZATION ===" << std::endl;
         // if (detectedPlane1) {
         //     g2o::Plane3D eq1 = detectedPlane1->getGlobalEquation();
-        //     std::cout << "Detected Plane #" << g_firstDetectedPlaneId << " equation: [" 
-        //             << eq1.coeffs().transpose() << "]" << std::endl;
         // }
         // if (detectedPlane2) {
         //     g2o::Plane3D eq2 = detectedPlane2->getGlobalEquation();
-        //     std::cout << "Detected Plane #" << g_secondDetectedPlaneId << " equation: [" 
-        //             << eq2.coeffs().transpose() << "]" << std::endl;
         // }
         // if (bimWall1) {
         //     g2o::Plane3D bim1 = bimWall1->getGlobalEquation();
-        //     std::cout << "BIM Wall #1 equation: [" 
-        //             << bim1.coeffs().transpose() << "]" << std::endl;
         // }
         // if (bimWall3) {
         //     g2o::Plane3D bim3 = bimWall3->getGlobalEquation();
-        //     std::cout << "BIM Wall #3 equation: [" 
-        //             << bim3.coeffs().transpose() << "]" << std::endl;
         // }
         
         
         optimizer.setVerbose(true);
 
+        // [TIMING][OPT] measure pure solver time of the BIM-aware bundle adjustment
+        // Wraps only initializeOptimization() + optimize(N). Excludes graph construction,
+        // atlas marshaling, and state recovery, which are base-SLAM costs.
+        size_t nG2oVerts = optimizer.vertices().size();
+        size_t nG2oEdges = optimizer.edges().size();
+        auto tOptStart = std::chrono::steady_clock::now();
         optimizer.initializeOptimization();
-        optimizer.optimize(1000);
+        optimizer.optimize(nIterations);
+        auto tOptEnd = std::chrono::steady_clock::now();
+        double optMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(tOptEnd - tOptStart).count();
+        std::cout << "[TIMING][OPT] ms=" << optMs
+                  << " kfs=" << vpKFs.size()
+                  << " mps=" << vpMP.size()
+                  << " planes=" << allPlanesVec.size()
+                  << " bim_walls=" << vpBIMWalls.size()
+                  << " active_assoc=" << g_associations.size()
+                  << " g2o_verts=" << nG2oVerts
+                  << " g2o_edges=" << nG2oEdges
+                  << std::endl;
+
         Verbose::PrintMess("BA: End of the optimization", Verbose::VERBOSITY_NORMAL);
 
-        std::cout << "\n=== Visualizing AGraph Bundle Adjustment ===" << std::endl;
         auto visualization_markers = vs_graphs_visualization::visualizeLocalBAGraph(
             &optimizer,        // g2o::SparseOptimizer*
             vpBIMWalls,        // const std::vector<ORB_SLAM3::Plane*>& bimWalls
             allPlanesVec,      // const std::vector<ORB_SLAM3::Plane*>& detectedPlanes
+            g_associations,    // const std::vector<std::pair<ORB_SLAM3::Plane*, ORB_SLAM3::Plane*>>& associations
             "world",           // const std::string& frame_id
             6000);             // int initial_id   // Use different ID range to avoid conflicts
-        std::cout << "=== AGraph BA Visualization Complete ===" << std::endl;
 
         // Recover optimized data (Global Optimization)
         // Globally Optimized Keyframes
@@ -1683,7 +1665,6 @@ namespace ORB_SLAM3
             {
                 pKF->SetPose(Sophus::SE3f(SE3quat.rotation().cast<float>(), SE3quat.translation().cast<float>()));
                 // Option 1: Print quaternion coefficients (w, x, y, z)
-                // std::cout << "KF: " << pKF->mnId << " pose quat AFTER OPT: " << SE3quat.rotation().coeffs().transpose() <<"  "<< SE3quat.translation() << std::endl;
 
             }
             else // compare the optimized pose with the one from the loop closure, if more than 1m...
@@ -1799,93 +1780,11 @@ namespace ORB_SLAM3
                 if (true) // MODIFY
                 {
                     vpPlane->setGlobalEquation(vPlane->estimate());
-                    // std::cout<<" plane with id: " <<vpPlane->getId()<< "  AFTER calling Global optimize"<<vPlane->estimate().coeffs().transpose() <<std::endl;
                 }
 
 
-                // // **UPDATE CENTROID BY PROJECTING ONTO OPTIMIZED PLANE**
-                // Eigen::Vector3f oldCentroid = vpPlane->getCentroid();
-                // Eigen::Vector3d oldCentroidD = oldCentroid.cast<double>();
-                // // Get optimized plane parameters
-                // g2o::Plane3D optimizedPlane = vPlane->estimate();
-                // Eigen::Vector3d planeNormal = optimizedPlane.normal();
-                // double planeDistance = optimizedPlane.distance();
-                // // Calculate distance from old centroid to optimized plane
-                // double distToPlane = planeNormal.dot(oldCentroidD) + planeDistance;
-                // // Project old centroid onto optimized plane
-                // Eigen::Vector3d projectedCentroid = oldCentroidD - distToPlane * planeNormal;
-                // // Update the plane centroid
-                // vpPlane->setCentroid(projectedCentroid.cast<float>());
-                // double verificationDistance = planeNormal.dot(projectedCentroid) + planeDistance;
-                // std::cout << "📐 Updated centroid for Plane #" << vpPlane->getId() 
-                //         << " from [" << oldCentroid.transpose() << "] to [" 
-                //         << projectedCentroid.cast<float>().transpose() << "]" << std::endl;
-                // std::cout << "   Distance to plane: " << distToPlane << " units" << std::endl;
-                // std::cout << "   Verification distance: " << verificationDistance << " units (should be ~0)" << std::endl;
-                // // **ALERT if verification fails**
-                // if (std::abs(verificationDistance) > 1e-6) {
-                //     std::cout << "⚠️  WARNING: Centroid projection verification failed!" << std::endl;
-                // }
-                // else
-                // {
-                //     vpPlane->mPlaneGBA = vPlane->estimate();
-                //     vpPlane->mnBAGlobalForKF = nLoopKF;
-                // }
             }
         }
-
-        // **NEW: Print g_associations data after optimization**
-        std::cout << "\n=== BIM-DETECTED ASSOCIATIONS AFTER OPTIMIZATION ===" << std::endl;
-        std::cout << "Total associations: " << g_associations.size() << std::endl;
-
-        for (size_t i = 0; i < g_associations.size(); ++i) {
-            const auto& association = g_associations[i];
-            
-            if (association.first && association.second) {
-                Plane* bimWall = association.first;
-                Plane* detectedPlane = association.second;
-                
-                // Get current plane equations
-                g2o::Plane3D bimEquation = bimWall->getGlobalEquation();
-                g2o::Plane3D detectedEquation = detectedPlane->getGlobalEquation();
-                
-                // Calculate alignment error
-                Eigen::Vector3d error = bimEquation.ominus(detectedEquation);
-                double distance = error.norm();
-                
-                std::cout << "Association #" << i << ":" << std::endl;
-                std::cout << "  BIM Wall #" << bimWall->getBIMId() << " ↔ Detected Plane #" << detectedPlane->getId() << std::endl;
-                std::cout << "  BIM equation:      [" << bimEquation.coeffs().transpose() << "]" << std::endl;
-                std::cout << "  Detected equation: [" << detectedEquation.coeffs().transpose() << "]" << std::endl;
-                std::cout << "  Alignment distance: " << distance << std::endl;
-                std::cout << "  Status: " << (distance < 0.5 ? "✅ ALIGNED" : "❌ NOT ALIGNED") << std::endl;
-                std::cout << std::endl;
-            } else {
-                std::cout << "Association #" << i << ": ❌ NULL POINTER" << std::endl;
-            }
-        }
-
-        std::cout << "=== END ASSOCIATIONS SUMMARY ===" << std::endl;
-   
-        // for (auto &vpPlane : allPlanesVec){
-        //     std::cout<<" plane with id: " <<vpPlane->getId()<< " with BIM ID: " << vpPlane->getBIMId() << " AFTER calling optimize"<<vpPlane->getGlobalEquation().toVector().transpose() <<std::endl;
-        // }
-
-        // // ** Set  Optimized BIM Walls**
-        // for (auto &vpBIMWall : vpBIMWalls)
-        // {
-        //     if (optimizer.vertex(vpBIMWall->getOpIdG()))
-        //     {
-        //         g2o::VertexPlane *vBIMPlane = static_cast<g2o::VertexPlane *>(optimizer.vertex(vpBIMWall->getOpIdG()));
-        //         // if it is one of the matched walls, update the global equation
-        //         if(vpBIMWall->getBIMId() == g_BIM_wallId_1 || vpBIMWall->getBIMId() == g_BIM_wallId_2) {
-        //             // set the global equation for the BIM wall
-        //             vpBIMWall->setGlobalEquation(vBIMPlane->estimate());
-        //             std::cout << "🔷 BIM Wall #" << vpBIMWall->getBIMId() << " AFTER optimization: [" << vpBIMWall->getGlobalEquation().toVector().transpose() << "]" << std::endl;
-        //         }
-        //     }
-        // }
-
 
         // [TODO] - Add recovery of optimized data for Doors and Rooms
     }
@@ -3430,21 +3329,6 @@ namespace ORB_SLAM3
                     mpLocalPlaneId[plane->getId()] = true;
                 }
             }
-            // // **ALWAYS add previously matched planes to local list**
-            // {
-            //     std::lock_guard<std::mutex> lock(g_localMatchedPlanesMutex);
-            //     for (Plane* matchedPlane : g_localMatchedPlanes) {
-            //         if (matchedPlane) {
-            //             // Check if not already in local list
-            //             if (mpLocalPlaneId.find(matchedPlane->getId()) == mpLocalPlaneId.end()) {
-            //                 localPlaneList.push_back(matchedPlane);
-            //                 mpLocalPlaneId[matchedPlane->getId()] = true;
-            //                 std::cout << "  → Re-added previously matched Plane #" << matchedPlane->getId() 
-            //                         << " (BIM ID: " << matchedPlane->getBIMId() << ") to local graph" << std::endl;
-            //             }
-            //         }
-            //     }
-            // }
 
             // [LBA] Loop through all the Doors and prepare them for LBA
             for (std::vector<ORB_SLAM3::Door *>::iterator idx = localDoorsVec.begin(), vend = localDoorsVec.end();
@@ -3632,7 +3516,6 @@ namespace ORB_SLAM3
 
         unsigned long maxKFid = 0;
 
-        // DEBUG LBA
         pCurrentMap->msOptKFs.clear();
         pCurrentMap->msFixedKFs.clear();
 
@@ -3648,24 +3531,20 @@ namespace ORB_SLAM3
             // {
             vSE3->setFixed(false);
                 // print that the local graph KF is not fixed
-                // std::cout << "Local graph KF " << pKFi->mnId << " is NOT fixed." << std::endl;
             // }
             // else{
             
                 // vSE3->setFixed(pKFi->mnId == pMap->GetInitKFid());
                 // vSE3->setFixed(false);
                 // if (pKFi->mnId == pMap->GetInitKFid())
-                //     {// std::cout << "Local graph KF " << pKFi->mnId << " is fixed." << std::endl;
                 //     }
                 // else{
-                //     // std::cout << "Local graph KF " << pKFi->mnId << " is NOT fixed." << std::endl;
                 // }
             // }
             // vSE3->setFixed(pKFi->mnId == pMap->GetInitKFid());
             optimizer.addVertex(vSE3);
             if (pKFi->mnId > maxKFid)
                 maxKFid = pKFi->mnId;
-            // DEBUG LBA
             pCurrentMap->msOptKFs.insert(pKFi->mnId);
         }
         num_OptKF = localKeyFrameList.size();
@@ -3682,7 +3561,6 @@ namespace ORB_SLAM3
             optimizer.addVertex(vSE3);
             if (pKFi->mnId > maxKFid)
                 maxKFid = pKFi->mnId;
-            // DEBUG LBA
             pCurrentMap->msFixedKFs.insert(pKFi->mnId);
         }
 
@@ -3784,7 +3662,6 @@ namespace ORB_SLAM3
                     // Monocular observation
                     if (leftIndex != -1 && pKFi->mvuRight[get<0>(mit->second)] < 0)
                     {
-                        // std::cout << "Adding Mono edge for MapPoint #" << pMP->mnId << " in KeyFrame #" << pKFi->mnId << std::endl;
                         const cv::KeyPoint &kpUn = pKFi->mvKeysUn[leftIndex];
                         Eigen::Matrix<double, 2, 1> obs;
                         obs << kpUn.pt.x, kpUn.pt.y;
@@ -3795,14 +3672,6 @@ namespace ORB_SLAM3
                         e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(pKFi->mnId)));
                         e->setMeasurement(obs);
                         const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
-                        // // **WEAKEN visual constraints during initial BIM alignment**
-                        // float adjusted_invSigma2 = invSigma2;
-                        // if (!g_initialAlignmentComplete && (g_LOCALfirstPlaneMatched || g_LOCALsecondPlaneMatched)) {
-                        //     adjusted_invSigma2 *= 0.001; // Make visual constraints 1000x weaker
-                        //     std::cout << "🔽 Weakening visual constraint for KF #" << pKFi->mnId << std::endl;
-                        // }
-
-                        // e->setInformation(Eigen::Matrix2d::Identity() * adjusted_invSigma2);
                         e->setInformation(Eigen::Matrix2d::Identity() * invSigma2);
 
                         g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
@@ -3820,7 +3689,6 @@ namespace ORB_SLAM3
                     }
                     else if (leftIndex != -1 && pKFi->mvuRight[get<0>(mit->second)] >= 0) // Stereo observation
                     {
-                        // std::cout << "Adding Stereo edge for MapPoint #" << pMP->mnId << " in KeyFrame #" << pKFi->mnId << std::endl;
                         const cv::KeyPoint &kpUn = pKFi->mvKeysUn[leftIndex];
                         Eigen::Matrix<double, 3, 1> obs;
                         const float kp_ur = pKFi->mvuRight[get<0>(mit->second)];
@@ -3872,7 +3740,6 @@ namespace ORB_SLAM3
 
                             if (optimizer.vertex(id) && optimizer.vertex(pKFi->mnId))
                             {
-                                // std::cout << "Adding Body edge for MapPoint #" << pMP->mnId << " in KeyFrame #" << pKFi->mnId << std::endl;
                                 e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(id)));
                                 e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(pKFi->mnId)));
                                 e->setMeasurement(obs);
@@ -3942,12 +3809,10 @@ namespace ORB_SLAM3
             // // if (g_initialAlignmentComplete) 
             // {
             //     vPlane->setFixed(true);
-            // std::cout << "Local graph Plane " << pMapPlane->getId() << " is with BIM:" << pMapPlane->getBIMId() << std::endl;
             // }
             // else{
             
             //     vPlane->setFixed(false);
-            //     std::cout << "Local graph Plane " << pMapPlane->getId() << " is NOT fixed." << pMapPlane->getBIMId() << std::endl;
             // }
             optimizer.addVertex(vPlane);
             nPlanes++;
@@ -4008,13 +3873,10 @@ namespace ORB_SLAM3
                     // adding plane-KF constraints -- is enabled for now
                     if (sysParams->optimization.plane_kf.enabled)
                     {
-                        // std::cout << "Adding Plane-KF edge for Plane #" << pMapPlane->getId() 
-                        //         << " in KeyFrame #" << pKFi->mnId << std::endl;
                         ORB_SLAM3::EdgeVertexPlaneProjectSE3KF *e = new ORB_SLAM3::EdgeVertexPlaneProjectSE3KF();
                         e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(pKFi->mnId)));
                         e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(opId)));
                         
-                        // **STRENGTHEN edges for BIM-matched planes**
                         double information_gain = sysParams->optimization.plane_kf.information_gain;
                         
                         // Check if this plane is matched with BIM
@@ -4026,8 +3888,6 @@ namespace ORB_SLAM3
                         
                         // // if (isMatchedWithBIM && !g_initialAlignmentComplete) {
                         // information_gain *= 10000.0; // Make constraint 10,000x stronger!
-                        // std::cout << "💪 SUPER STRONG Plane-KF edge: Plane #" << pMapPlane->getId() 
-                        //         << " ↔ KF #" << pKFi->mnId << " (gain: " << information_gain << ")" << std::endl;
                         // // }
                         
                         // e->setInformation(Eigen::Matrix<double, 3, 3>::Identity() * obs.confidence * information_gain);
@@ -4062,7 +3922,6 @@ namespace ORB_SLAM3
                             e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(pKFi->mnId)));
                             e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(opId)));
 
-                            // **STRENGTHEN edges for BIM-matched planes**
                             // double information_gain = sysParams->optimization.plane_kf.information_gain;
                             
                             // Check if this plane is matched with BIM
@@ -4074,8 +3933,6 @@ namespace ORB_SLAM3
                             
                             // if (isMatchedWithBIM && !g_initialAlignmentComplete) {
                             // information_gain *= 10000.0; // Make constraint 10,000x stronger!
-                            // std::cout << "💪 SUPER STRONG Plane-KF edge: Plane #" << pMapPlane->getId() 
-                            //         << " ↔ KF #" << pKFi->mnId << " (gain: " << information_gain << ")" << std::endl;
                             // // }
                             
                             // e->setInformation(Eigen::Matrix<double, 1, 1>::Identity() * obs.confidence * information_gain);
@@ -4283,7 +4140,6 @@ namespace ORB_SLAM3
                                 g_LOCALfirstDetectedPlaneId = detectedPlane->getId();
                                 g_LOCALfirstPlaneMatched = true;
 
-                                // **SAVE to static list**
                                 {
                                     std::lock_guard<std::mutex> lock(g_localMatchedPlanesMutex);
                                     if (std::find(g_localMatchedPlanes.begin(), g_localMatchedPlanes.end(), detectedPlane) == g_localMatchedPlanes.end()) {
@@ -4339,7 +4195,6 @@ namespace ORB_SLAM3
                                     g_LOCALsecondPlaneMatched = true;
                                     g_LOCALmatchingComplete = true; 
 
-                                    // **SAVE to static list**
                                     {
                                         std::lock_guard<std::mutex> lock(g_localMatchedPlanesMutex);
                                         if (std::find(g_localMatchedPlanes.begin(), g_localMatchedPlanes.end(), detectedPlane) == g_localMatchedPlanes.end()) {
@@ -4400,15 +4255,11 @@ namespace ORB_SLAM3
                 continue;
             std::cout << "Local graph Plane " << plane->getId() << " is with BIM:" << plane->getBIMId() << " is with OpId:" << plane->getOpId() << std::endl;
             // print g_LOCALfirstDetectedPlaneId and g_LOCALsecondDetectedPlaneId
-            // std::cout << "g_LOCALfirstDetectedPlaneId: " << g_LOCALfirstDetectedPlaneId << std::endl;
-            // std::cout << "g_LOCALsecondDetectedPlaneId: " << g_LOCALsecondDetectedPlaneId << std::endl;
             if (plane->getId() == g_LOCALfirstDetectedPlaneId) {
                 detectedPlane1 = plane;
-                // std::cout << "Detected Plane #0 found with OpIdG: " << detectedPlane1->getOpId() << std::endl;
             }
             if (plane->getId() == g_LOCALsecondDetectedPlaneId) {
                 detectedPlane2 = plane;
-                // std::cout << "Detected Plane #1 found with OpIdG: " << detectedPlane2->getOpId() << std::endl;
             }
         }
         
@@ -4432,7 +4283,6 @@ namespace ORB_SLAM3
             if (detectedPlane1 && detectedPlane2 && bimWall1 && bimWall3) {
                 std::cout << "✓ All matched planes found - creating alignment edges" << std::endl;
                 
-                // **NEW: Set BIM IDs for matched detected planes**
                 detectedPlane1->setBIMId(bimWall1->getBIMId()); // Set BIM ID 1 for detected plane #0
                 detectedPlane2->setBIMId(bimWall3->getBIMId()); // Set BIM ID 3 for detected plane #1
 
@@ -4445,8 +4295,6 @@ namespace ORB_SLAM3
     
 
                 // Create edge between detected plane #0 and BIM wall #1
-                // std::cout<< "optimizer.vertex(detectedPlane1->getOpId()): "<<optimizer.vertex(detectedPlane1->getOpId())<<std::endl;
-                // std::cout<< "optimizer.vertex(bimWall1->getOpId()): "<<optimizer.vertex(bimWall1->getOpId())<<std::endl;
                 if (optimizer.vertex(detectedPlane1->getOpId()) && optimizer.vertex(bimWall1->getOpId())) {
                     std::cout<<" inside dge creation"<<std::endl;
                     Edge2Planes *edge1 = new Edge2Planes();
@@ -4485,11 +4333,8 @@ namespace ORB_SLAM3
                     rk2->setDelta(thHuber3D);
                     
                     optimizer.addEdge(edge2);
-                    std::cout << "  → Edge created: Detected Plane #" << g_LOCALsecondDetectedPlaneId 
-                            << " ↔ BIM Wall #3" << std::endl;
                 }
-                
-                std::cout << "=== Plane-to-BIM Alignment Edges Created ===" << std::endl;
+
             }
         }
 
@@ -4536,7 +4381,6 @@ namespace ORB_SLAM3
         //     &optimizer, "world", 5000);
 
         // print that local optimization is done
-        std::cout << "LM-LBA: Local optimization done" << std::endl;
 
         vector<pair<KeyFrame *, MapPoint *>> vToErase;
         vToErase.reserve(vpEdgesMono.size() + vpEdgesBody.size() + vpEdgesStereo.size());
@@ -4680,8 +4524,6 @@ namespace ORB_SLAM3
             Plane *pMapPlane = *idx;
             g2o::VertexPlane *vPlane = static_cast<g2o::VertexPlane *>(optimizer.vertex(pMapPlane->getOpId()));
             g2o::Plane3D planePlane = vPlane->estimate();
-            // std::cout<<"Plane "<<pMapPlane->getId()<<" with BIM_Id: "<<pMapPlane->getBIMId()<<std::endl;
-            // std::cout<<"estimated local plane pose: "<<vPlane->estimate().toVector()<<std::endl;
             pMapPlane->setGlobalEquation(planePlane);
         }
 
@@ -4708,10 +4550,8 @@ namespace ORB_SLAM3
         //  // NEW: Check initial alignment directly after optimization (only if matching complete but alignment not confirmed)
         // if (g_LOCALmatchingComplete && !g_initialAlignmentComplete) {
         //     const double alignmentThreshold = 0.15; // Slightly more lenient threshold
-        //     std::cout << "\n=== Checking LOCAL Initial Alignment ===" << std::endl;
         //     if (detectedPlane1 && detectedPlane2 && bimWall1 && bimWall3) {
         //         // Get optimized plane equations
-        //         std::cout << "✓ All required planes found - checking alignment" << std::endl;
         //         g2o::Plane3D detectedEq1 = detectedPlane1->getGlobalEquation();
         //         g2o::Plane3D detectedEq2 = detectedPlane2->getGlobalEquation();
         //         g2o::Plane3D bimEq1 = bimWall1->getGlobalEquation();
@@ -4730,7 +4570,6 @@ namespace ORB_SLAM3
                 
         //         if (aligned) {
         //             g_initialAlignmentComplete = true;
-        //             std::cout << "🎯 Initial LOCAL alignment complete! (d1:" << distance1 << ", d2:" << distance2 << ")" << std::endl;
         //         }
         //     }
         // }
@@ -6557,7 +6396,6 @@ namespace ORB_SLAM3
         vpei.reserve(vpKFs.size());
         vector<pair<KeyFrame *, KeyFrame *>> vppUsedKF;
         vppUsedKF.reserve(vpKFs.size());
-        // std::cout << "build optimization graph" << std::endl;
 
         for (size_t i = 0; i < vpKFs.size(); i++)
         {

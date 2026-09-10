@@ -16,6 +16,16 @@ This file documents the available _launch-time arguments_ that can be passed whe
 | `rgb_camera_info_topic`     | `/camera/color/camera_info`                | Topic name for RGB camera intrinsics.                                 |
 | `depth_image_topic`         | `/camera/aligned_depth_to_color/image_raw` | Topic name for the aligned depth image.                               |
 
+## 🏗️ BIM Arguments
+
+| Argument               | Default Value        | Description                                                                                  |
+| ----------------------- | --------------------- | ---------------------------------------------------------------------------------------------- |
+| `walls_csv`             | `your_bim_file.csv`   | Path to your BIM wall CSV (relative to `config/`, or absolute). See the [BIM Wall Data](/README.md#-bim-wall-data) section. |
+| `bimID_1`                | `1`                    | `TAG` of the first wall used for initial alignment.                                            |
+| `bimID_2`                | `3`                    | `TAG` of the second wall used for initial alignment. Must be non-parallel to `bimID_1`.          |
+| `runAgraph`              | `true`                 | Enable BIM-informed graph optimization in the back-end.                                        |
+| `justInitialAlignment`   | `false`                | Stop after initial alignment, skipping the continuous BIM-informed optimization.               |
+
 To launch the system with default parameters, use the following command:
 
 ```bash

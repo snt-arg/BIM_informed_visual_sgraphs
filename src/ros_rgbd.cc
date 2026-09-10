@@ -1,6 +1,10 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
  *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
  *
@@ -23,6 +27,7 @@
 #include "common.h"
 #include "visualization_local_ba.h" 
 #include "vs_graphs/msg/bim_wall_data_array.hpp"
+#include "bim_integration.h"
 
 using namespace std;
 
@@ -71,6 +76,11 @@ int main(int argc, char **argv)
     node->declare_parameter<std::string>("frame_structural_element", "struc_elem");
     node->declare_parameter<std::string>("frame_building_component", "build_comp");
     node->declare_parameter<std::string>("frame_bim", "bim_vis");
+    node->declare_parameter<int>("bimID_1", 1 ); 
+    node->declare_parameter<int>("bimID_2", 3 ); 
+    node->declare_parameter<bool>("runAgraph", true);
+    node->declare_parameter<bool>("XYZcoord", false);
+    node->declare_parameter<bool>("justInitialAlignment", false);
 
     std::string vocFile = node->get_parameter("voc_file").as_string();
     std::string settingsFile = node->get_parameter("settings_file").as_string();
@@ -103,6 +113,17 @@ int main(int argc, char **argv)
     frameBIM = node->get_parameter("frame_bim").as_string();
     pubStaticTransform = node->get_parameter("static_transform").as_bool();
     bool enablePangolin = node->get_parameter("enable_pangolin").as_bool();
+    int bimID1 = node->get_parameter("bimID_1").as_int();
+    int bimID2 = node->get_parameter("bimID_2").as_int();
+    bool runAgraphParam = node->get_parameter("runAgraph").as_bool();
+    bool launchXYZcoord = node->get_parameter("XYZcoord").as_bool();
+    bool justInitialAlignment = node->get_parameter("justInitialAlignment").as_bool();
+
+    ORB_SLAM3::XYZcoord = launchXYZcoord;
+    ORB_SLAM3::runAgraph = runAgraphParam;
+    ORB_SLAM3::justInitialAlignment = justInitialAlignment;
+    ORB_SLAM3::BIM_wallId_1 = bimID1;
+    ORB_SLAM3::BIM_wallId_2 = bimID2;
 
     // Initializing system threads and getting ready to process frames
     auto igb = std::make_shared<ImageGrabber>();
@@ -142,7 +163,12 @@ int main(int argc, char **argv)
         { igb->GrabVoxbloxSkeletonGraph(*msg); });
     
     // auto subBimWalls = node->create_subscription<visualization_msgs::msg::MarkerArray>(
-    static bool bimDataProcessed = false;\n\n    rclcpp::Subscription<vs_graphs::msg::BIMWallDataArray>::SharedPtr subCsvData = node->create_subscription<vs_graphs::msg::BIMWallDataArray>(\n    \"bim/wall_data\", 1,
+    static bool bimDataProcessed = false; // Add this flag
+
+    vs_graphs_visualization::initializeLocalBAPublisher(node); // For graph visualization
+
+    rclcpp::Subscription<vs_graphs::msg::BIMWallDataArray>::SharedPtr subCsvData = node->create_subscription<vs_graphs::msg::BIMWallDataArray>(
+    "bim/wall_data", 1,
     [&subCsvData](const vs_graphs::msg::BIMWallDataArray& msg) {
         if (bimDataProcessed) {
             return; // Skip if already processed
@@ -166,8 +192,7 @@ int main(int argc, char **argv)
 
     static std::shared_ptr<image_transport::ImageTransport> image_transport = std::make_shared<image_transport::ImageTransport>(node);
     setupPublishers(node, image_transport, nodeName);
-
-    vs_graphs_visualization::initializeLocalBAPublisher(node);
+    setupServices(node, nodeName);
 
     RCLCPP_INFO(rclcpp::get_logger("vs_graphs"), "Starting spin...");
     rclcpp::spin(node);
