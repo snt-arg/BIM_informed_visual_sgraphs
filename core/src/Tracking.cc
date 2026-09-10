@@ -1,9 +1,13 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
- * 
+ *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
- * 
+ *
  * Original Copyright (C) 2014-2021 University of Zaragoza:
  * Raúl Mur-Artal, Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez,
  * José M.M. Montiel, and Juan D. Tardós.
@@ -2396,23 +2400,36 @@ namespace ORB_SLAM3
 #endif
     }
 
-    // Map initialization for stereo and RGB-D
+    // Map initialization for Stereo and RGB-D (with/without IMU) setups
     void Tracking::StereoInitialization()
     {
+        // Variables
+        const double kMinAccelerationThreshold = 0.5;
+
         if (mCurrentFrame.N > 500)
         {
             if (mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
             {
                 if (!mCurrentFrame.mpImuPreintegrated || !mLastFrame.mpImuPreintegrated)
                 {
-                    cout << "not IMU meas" << endl;
+                    std::cout << "[Tracking] IMU measurements are not available for the current frame!" << std::endl;
                     return;
                 }
 
-                if (!mFastInit && (mCurrentFrame.mpImuPreintegratedFrame->avgA - mLastFrame.mpImuPreintegratedFrame->avgA).norm() < 0.5)
+                // Check acceleration difference for fast initialization
+                if (!mFastInit)
                 {
-                    cout << "not enough acceleration" << endl;
-                    return;
+                    const double accelDiff = (mCurrentFrame.mpImuPreintegratedFrame->avgA -
+                                              mLastFrame.mpImuPreintegratedFrame->avgA)
+                                                 .norm();
+
+                    if (accelDiff < kMinAccelerationThreshold)
+                    {
+                        std::cout << "[Tracking] Low IMU acceleration changes: "
+                                  << std::fixed << std::setprecision(2) << accelDiff << " (threshold: "
+                                  << kMinAccelerationThreshold << ")! Skipping ..." << std::endl;
+                        return;
+                    }
                 }
 
                 if (mpImuPreintegratedFromLastKF)
@@ -3931,20 +3948,20 @@ namespace ORB_SLAM3
 
         if (!bLocMap)
         {
-            Verbose::PrintMess("Reseting Local Mapper...", Verbose::VERBOSITY_VERY_VERBOSE);
+            Verbose::PrintMess("[Tracking] Reseting 'LocalMapping' ...", Verbose::VERBOSITY_VERY_VERBOSE);
             mpLocalMapper->RequestResetActiveMap(pMap);
-            Verbose::PrintMess("done", Verbose::VERBOSITY_VERY_VERBOSE);
+            Verbose::PrintMess("[Tracking] Finished resetting 'LocalMapping'!", Verbose::VERBOSITY_VERY_VERBOSE);
         }
 
         // Reset Loop Closing
-        Verbose::PrintMess("Reseting Loop Closing...", Verbose::VERBOSITY_NORMAL);
+        Verbose::PrintMess("[Tracking] Reseting 'LoopClosing' ...", Verbose::VERBOSITY_NORMAL);
         mpLoopClosing->RequestResetActiveMap(pMap);
-        Verbose::PrintMess("done", Verbose::VERBOSITY_NORMAL);
+        Verbose::PrintMess("[Tracking] Finished resetting 'LoopClosing'!", Verbose::VERBOSITY_NORMAL);
 
         // Clear BoW Database
-        Verbose::PrintMess("Reseting Database", Verbose::VERBOSITY_NORMAL);
-        mpKeyFrameDB->clearMap(pMap); // Only clear the active map references
-        Verbose::PrintMess("done", Verbose::VERBOSITY_NORMAL);
+        Verbose::PrintMess("[Tracking] Reseting 'Database' ...", Verbose::VERBOSITY_NORMAL);
+        mpKeyFrameDB->clearMap(pMap);
+        Verbose::PrintMess("[Tracking] Finished resetting 'Database'!", Verbose::VERBOSITY_NORMAL);
 
         // Clear Map (this erase MapPoints and KeyFrames)
         mpAtlas->clearMap();

@@ -80,6 +80,7 @@ endif()
 # Generate services
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SaveMap.srv"
+  "srv/SaveTransform.srv"
   "msg/VSGraphsWallData.msg"
   "msg/VSGraphsRoomData.msg"
   "msg/VSGraphsAllWallsData.msg"

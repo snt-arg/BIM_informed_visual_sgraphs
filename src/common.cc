@@ -1,6 +1,10 @@
 /**
  * This file is a modified version of a file from ORB-SLAM3.
  *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Modifications Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
  *
@@ -23,6 +27,7 @@
 #include "common.h"
 #include <rclcpp/rclcpp.hpp>
 #include "Optimizer.h"
+#include "bim_integration.h"
 
 
 // Variables for ORB-SLAM3
@@ -73,6 +78,11 @@ rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pubBIMBEFOREO
 // rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pubBIMRooms;
 // rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pubBIMDoors;
 
+rclcpp::Service<vs_graphs::srv::SaveMap>::SharedPtr save_map_service_server;
+rclcpp::Service<vs_graphs::srv::SaveMap>::SharedPtr save_map_points_service_server;
+rclcpp::Service<vs_graphs::srv::SaveMap>::SharedPtr save_trajectory_service_server;
+rclcpp::Service<vs_graphs::srv::SaveTransform>::SharedPtr save_transform_service_server;
+
 
 void saveMapService(
     std::shared_ptr<vs_graphs::srv::SaveMap::Request> req,
@@ -84,6 +94,48 @@ void saveMapService(
         RCLCPP_INFO(rclcpp::get_logger("visual_sgraphs"), "Map was saved as %s.osa", req->name.c_str());
     else
         RCLCPP_ERROR(rclcpp::get_logger("visual_sgraphs"), "Map could not be saved.");
+}
+
+void saveTransformService(
+    std::shared_ptr<vs_graphs::srv::SaveTransform::Request> request,
+    std::shared_ptr<vs_graphs::srv::SaveTransform::Response> response)
+{
+    try {
+        std::string filename = request->name;
+        std::ofstream file(filename);
+        
+        if (!file.is_open()) {
+            response->success = false;
+            response->message = "Could not open file: " + filename;
+            RCLCPP_ERROR(rclcpp::get_logger("save_transform"), "Failed to open file: %s", filename.c_str());
+            return;
+        }
+
+        // Get the transformation matrix from Optimizer
+        // Assuming T_bim_to_detected is accessible via a getter function
+        Eigen::Matrix4d T = ORB_SLAM3::Optimizer::GetBIMToDetectedTransform();
+        
+        // Save the 4x4 transformation matrix
+        file << std::fixed << std::setprecision(6);
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                file << T(i, j);
+                if (j < 3) file << " ";
+            }
+            file << "\n";
+        }
+        
+        file.close();
+        
+        response->success = true;
+        response->message = "Transform saved successfully to: " + filename;
+        RCLCPP_INFO(rclcpp::get_logger("save_transform"), "Transform saved to: %s", filename.c_str());
+    }
+    catch (const std::exception& e) {
+        response->success = false;
+        response->message = std::string("Error: ") + e.what();
+        RCLCPP_ERROR(rclcpp::get_logger("save_transform"), "Exception: %s", e.what());
+    }
 }
 
 void saveMapPointsAsPCDService(
@@ -128,12 +180,27 @@ void saveTrajectoryService(
 
 void setupServices(std::shared_ptr<rclcpp::Node> node, const std::string &node_name)
 {
-    node->create_service<vs_graphs::srv::SaveMap>(
-        node_name + "/save_map", &saveMapService);
-    node->create_service<vs_graphs::srv::SaveMap>(
-        node_name + "/save_map_points", &saveMapPointsAsPCDService);
-    node->create_service<vs_graphs::srv::SaveMap>(
-        node_name + "/save_traj", &saveTrajectoryService);
+    RCLCPP_INFO(rclcpp::get_logger("visual_sgraphs"), "Creating services");
+
+    save_map_service_server = node->create_service<vs_graphs::srv::SaveMap>(
+        node_name + "/save_map",
+        &saveMapService
+    );
+
+    save_map_points_service_server = node->create_service<vs_graphs::srv::SaveMap>(
+        node_name + "/save_map_points",
+        &saveMapPointsAsPCDService
+    );
+
+    save_trajectory_service_server = node->create_service<vs_graphs::srv::SaveMap>(
+        node_name + "/save_traj",
+        &saveTrajectoryService
+    );
+
+    save_transform_service_server = node->create_service<vs_graphs::srv::SaveTransform>(
+        node_name + "/save_transform",
+        &saveTransformService
+    );
 }
 
 void setupPublishers(std::shared_ptr<rclcpp::Node> node, std::shared_ptr<image_transport::ImageTransport> image_transport, const std::string &node_name)
@@ -506,7 +573,6 @@ void publishBIMWalls(const std::vector<ORB_SLAM3::Plane*>& bimWalls, rclcpp::Tim
     double plane_h = 3; // Height for BIM walls
     double thickness = 0.2; // Thickness for BIM walls
 
-    // **FIX: Clear old markers with proper DELETEALL marker**
     visualization_msgs::msg::Marker deleteAllMarker;
     deleteAllMarker.header.frame_id = frameBIM.empty() ? frameWorld : frameBIM;
     deleteAllMarker.header.stamp = msgTime;
@@ -515,7 +581,6 @@ void publishBIMWalls(const std::vector<ORB_SLAM3::Plane*>& bimWalls, rclcpp::Tim
     deleteAllMarker.id = 0; // ID doesn't matter for DELETEALL
     bimWallArray.markers.push_back(deleteAllMarker);
 
-    // **ALSO clear the other namespaces used**
     visualization_msgs::msg::Marker deleteXWalls;
     deleteXWalls.header.frame_id = frameBIM.empty() ? frameWorld : frameBIM;
     deleteXWalls.header.stamp = msgTime;
@@ -544,6 +609,7 @@ void publishBIMWalls(const std::vector<ORB_SLAM3::Plane*>& bimWalls, rclcpp::Tim
         float startZ = wall->getStartZ();
         float length = wall->getLength();
         Eigen::Vector3d normal = wall->getGlobalEquation().normal();
+        int id_wall = wall->getBIMId();
 
         
         // Create BIM Wall Marker
@@ -562,43 +628,50 @@ void publishBIMWalls(const std::vector<ORB_SLAM3::Plane*>& bimWalls, rclcpp::Tim
         wallMarker.pose.position.y = centroid.y(); // Center the wall vertically
         // wallMarker.pose.position.y = centroid.y() - 0.5 * plane_h; // Center the wall vertically
         wallMarker.pose.position.z = centroid.z();
-        // std::cout << "BIM Wall centroid: " << wallMarker.pose.position.x << ", " 
-        //           << wallMarker.pose.position.y << ", " 
-        //           << wallMarker.pose.position.z << std::endl;
 
-        // Orientation: 90 degrees around Y-axis for X-planes
-        Eigen::Quaterniond orientation = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d::UnitZ(), wall->getGlobalEquation().normal());
+        Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity(); 
+        if (ORB_SLAM3::XYZcoord) {
+            orientation = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d(1,0,0), wall->getGlobalEquation().normal()); // for XYZ
+            wallMarker.scale.x = thickness;  // for XYZ
+            wallMarker.scale.y = length;  // for XYZ
+            wallMarker.scale.z = plane_h; // for XYZ
+        }else {
+            orientation = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d::UnitZ(), wall->getGlobalEquation().normal()); // for Z-X-Y
+            wallMarker.scale.x = length;  // for Z-X-Y
+            wallMarker.scale.y = plane_h;  // for Z-X-Y
+            wallMarker.scale.z = thickness; // for Z-X-Y
+        }
         wallMarker.pose.orientation.x = orientation.x();
         wallMarker.pose.orientation.y = orientation.y();
         wallMarker.pose.orientation.z = orientation.z();
         wallMarker.pose.orientation.w = orientation.w();
 
-        wallMarker.scale.x = length;  // Wall length 
-        wallMarker.scale.y = plane_h;  // Wall height
-        wallMarker.scale.z = thickness; // Wall thickness
-
         // Determine if this is an X-plane or Y-plane based on normal vector
         bool isXPlane = (std::abs(normal.x()) > std::abs(normal.z()));
-
-        if (isXPlane) {
+        
+        if (id_wall>= 100) {
             // X-plane: wall parallel to X-axis (normal pointing in Y direction)
             wallMarker.ns = "bim_x_walls";
             
-            // Color for X-planes (blue-green)
-            wallMarker.color.r = 0.0;
-            wallMarker.color.g = 0.6;
-            wallMarker.color.b = 0.8;
-            wallMarker.color.a = 0.7;
+            // Color for X-planes (blue-green){1.0, 0.5, 0.0, 0.3}; 
+            // wallMarker.color.r = 0.0;
+            // wallMarker.color.g = 1.5;
+            // wallMarker.color.b = 0.0;
+            // wallMarker.color.a = 0.3;
+            wallMarker.color.r = 1.0;
+            wallMarker.color.g = 0.5;
+            wallMarker.color.b = 0.0;
+            wallMarker.color.a = 0.0;
         }
         else {
             // Y-plane: wall parallel to Y-axis (normal pointing in X direction)
             wallMarker.ns = "bim_y_walls";
             
             // Color for Y-planes (blue-purple)
-            wallMarker.color.r = 0.2;
-            wallMarker.color.g = 0.4;
-            wallMarker.color.b = 0.9;
-            wallMarker.color.a = 0.7;
+            wallMarker.color.r = 1.0;
+            wallMarker.color.g = 0.5;
+            wallMarker.color.b = 0.0;
+            wallMarker.color.a = 0.4;
         }
 
         bimWallArray.markers.push_back(wallMarker);
@@ -837,7 +910,6 @@ void publishAllMappedWalls(std::vector<ORB_SLAM3::Plane *> walls, rclcpp::Time m
         pcl::PointCloud<pcl::PointXYZRGBA>::Ptr wallCloud = wall->getMapClouds();
         if (wallCloud && wallCloud->points.size() > 1)
         {
-            // **NEW: Calculate geometric center (bounding box center)**
             pcl::PointXYZRGBA min_pt, max_pt;
             pcl::getMinMax3D(*wallCloud, min_pt, max_pt);
             
@@ -847,7 +919,6 @@ void publishAllMappedWalls(std::vector<ORB_SLAM3::Plane *> walls, rclcpp::Time m
             geometricCenter.y() = (min_pt.y + max_pt.y) / 2.0f;
             geometricCenter.z() = (min_pt.z + max_pt.z) / 2.0f;
             
-            // **UPDATE: Set the geometric center instead of density-based centroid**
             wall->setCentroid(geometricCenter);
             
             // Calculate length as before
@@ -871,10 +942,6 @@ void publishAllMappedWalls(std::vector<ORB_SLAM3::Plane *> walls, rclcpp::Time m
         vs_graphs::msg::VSGraphsWallData wallData;
         
         // // print the length
-        // std::cout << "Wall length: " << length << std::endl;
-        // std::cout << "Wall extent_x: " << extent_x << std::endl;
-        // std::cout << "Wall extent_y: " << extent_y << std::endl;
-        // std::cout << "Wall extent_z: " << extent_z << std::endl;
         // // take the biggest one of them
         // float max_extent = std::max({extent_x, extent_y, extent_z});
         // wallData.length = max_extent;
@@ -883,7 +950,6 @@ void publishAllMappedWalls(std::vector<ORB_SLAM3::Plane *> walls, rclcpp::Time m
         // wall->setLength(max_extent);
         // print the wallData.length
         float l = wall->getLength();
-        // std::cout << "WallData length: " << l << std::endl;
         wallData.id = wall->getId();
         wallData.centroid.x = wall->getCentroid().x();
         wallData.centroid.y = wall->getCentroid().y();

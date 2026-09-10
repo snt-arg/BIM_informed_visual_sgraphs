@@ -1,6 +1,10 @@
 /**
  * This file is part of ivS-Graphs.
  *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
  * Copyright (C) 2023-2025 SnT, University of Luxembourg
  * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger
  * Voos
@@ -25,11 +29,10 @@
 #include <Eigen/Dense>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
-#include <unordered_map> // **ADD THIS - needed for the lookup maps**
+#include <unordered_map>
 #include <vector>
 #include <visualization_msgs/msg/marker_array.hpp>
 
-// **ADD FORWARD DECLARATION FOR ORB_SLAM3::Plane**
 namespace ORB_SLAM3 {
 class Plane;
 }
@@ -103,31 +106,29 @@ visualization_msgs::msg::MarkerArray
 visualizeMarkers(g2o::SparseOptimizer *optimizer, const std::string &frame_id,
                  int &marker_id);
 
-// **MISSING: BIM walls visualization with centroid support**
 visualization_msgs::msg::MarkerArray
 visualizeBIMWalls(g2o::SparseOptimizer *optimizer,
                   const std::vector<ORB_SLAM3::Plane *> &bimWalls,
                   const std::string &frame_id, int &marker_id);
 
-// **MISSING: Fixed status visualization**
 visualization_msgs::msg::MarkerArray
 visualizeFixedStatus(g2o::SparseOptimizer *optimizer,
                      const std::string &frame_id, int &marker_id);
 
-// **UPDATE: Main function to include BIM walls and detected planes**
-visualization_msgs::msg::MarkerArray
-visualizeLocalBAGraph(g2o::SparseOptimizer *optimizer,
-                      const std::vector<ORB_SLAM3::Plane *> &bimWalls,
-                      const std::vector<ORB_SLAM3::Plane *> &detectedPlanes,
-                      const std::string &frame_id = "world",
-                      int initial_id = 1000);
+visualization_msgs::msg::MarkerArray visualizeLocalBAGraph(
+    g2o::SparseOptimizer* optimizer,
+    const std::vector<ORB_SLAM3::Plane*>& bimWalls,
+    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes,
+    const std::vector<std::pair<ORB_SLAM3::Plane*, ORB_SLAM3::Plane*>>& g_associations,
+    const std::string& frame_id = "world",
+    int initial_id = 1000);
 
 visualization_msgs::msg::MarkerArray
 visualizeEdges(g2o::SparseOptimizer *optimizer,
                const std::vector<ORB_SLAM3::Plane *> &bimWalls,
                const std::vector<ORB_SLAM3::Plane *> &detectedPlanes,
                const std::string &frame_id, int &marker_id,
-               bool useCentroidsForEdges); // **NEW PARAMETER**
+               bool useCentroidsForEdges);
 visualization_msgs::msg::MarkerArray
 visualizeDetectedPlanes(g2o::SparseOptimizer *optimizer,
                         const std::vector<ORB_SLAM3::Plane *> &detectedPlanes,

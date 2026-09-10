@@ -1,5 +1,9 @@
 # This file is part of ivS-Graphs.
 #
+# Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+# Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+# Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+#
 # Copyright (C) 2023-2025 SnT, University of Luxembourg
 # Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger Voos
 #
@@ -25,7 +29,6 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer
 from ament_index_python.packages import get_package_share_directory
 
-
 from launch.actions import SetEnvironmentVariable
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -37,6 +40,20 @@ def generate_launch_description():
             # Set environment variable to suppress TF2 warnings
             SetEnvironmentVariable("RCUTILS_LOGGING_SEVERITY_THRESHOLD", "ERROR"),
             # Global arguments
+            DeclareLaunchArgument(
+                "bimID_1", default_value="1"
+            ),  # ID of the first BIM wall used for initial alignment (see your BIM CSV)
+            DeclareLaunchArgument(
+                "bimID_2", default_value="3"
+            ),  # ID of the second BIM wall used for initial alignment (see your BIM CSV)
+            DeclareLaunchArgument("runAgraph", default_value="true"),
+            DeclareLaunchArgument(
+                "XYZcoord", default_value="false"
+            ),  # Default vocabulary file
+            DeclareLaunchArgument("justInitialAlignment", default_value="false"),
+            DeclareLaunchArgument(
+                "walls_csv", default_value="your_bim_file.csv"
+            ),  # CSV filename (relative to config/) or absolute path
             DeclareLaunchArgument("offline", default_value="true"),
             DeclareLaunchArgument("launch_rviz", default_value="true"),
             DeclareLaunchArgument("colored_pointcloud", default_value="true"),
@@ -94,6 +111,15 @@ def generate_launch_description():
                             ],
                         )
                     },
+                    {"bimID_1": LaunchConfiguration("bimID_1")},
+                    {"bimID_2": LaunchConfiguration("bimID_2")},
+                    {"runAgraph": LaunchConfiguration("runAgraph")},
+                    {"XYZcoord": LaunchConfiguration("XYZcoord")},
+                    {
+                        "justInitialAlignment": LaunchConfiguration(
+                            "justInitialAlignment"
+                        )
+                    },
                     {"roll": 0.0},
                     {"yaw": 1.5697},
                     {"pitch": -1.5697},
@@ -103,7 +129,7 @@ def generate_launch_description():
                     {"frame_bim": "bim_vis"},
                     {"enable_pangolin": False},
                     {"static_transform": True},
-                    {"colored_pointcloud": True},
+                    {"colored_pointcloud": False},
                     {"publish_pointclouds": True},
                 ],
                 remappings=[
@@ -218,7 +244,11 @@ def generate_launch_description():
 
 def launch_isgraphs(context, *args, **kwargs):
     pkg_dir = get_package_share_directory("vs_graphs")
-    walls_data_file = os.path.join(pkg_dir, "config", "Uni_building.csv")
+    walls_csv_arg = LaunchConfiguration("walls_csv").perform(context)
+    if os.path.isabs(walls_csv_arg):
+        walls_data_file = walls_csv_arg
+    else:
+        walls_data_file = os.path.join(pkg_dir, "config", walls_csv_arg)
 
     csv_publishing_cmd = Node(
         package="vs_graphs",

@@ -1,6 +1,32 @@
+/**
+ * This file is part of ivS-Graphs.
+ *
+ * Modifications Copyright (C) 2025-2026 SnT, University of Luxembourg
+ * Asier Bikandi-Noya, Miguel Fernandez-Cortizas, Muhammad Shaheer, Ali
+ * Tourani, Holger Voos, and Jose Luis Sanchez-Lopez.
+ *
+ * Copyright (C) 2023-2025 SnT, University of Luxembourg
+ * Ali Tourani, Saad Ejaz, Hriday Bavle, Jose Luis Sanchez-Lopez, and Holger
+ * Voos
+ *
+ * ivS-Graphs is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * ivS-Graphs is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+ * Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "visualization_local_ba.h"
 #include "OptimizableTypes.h"
-#include "Geometric/Plane.h" 
+#include "Geometric/Plane.h"
+#include "bim_integration.h"
 
 #include "Thirdparty/g2o/g2o/core/sparse_optimizer.h"
 #include "Thirdparty/g2o/g2o/types/types_six_dof_expmap.h"
@@ -10,27 +36,26 @@ namespace vs_graphs_visualization {
 // Global publisher for local BA visualization
 static rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr g_localBAPublisher = nullptr;
 static std::shared_ptr<rclcpp::Node> g_nodePtr = nullptr;
-// Keep track of previous marker IDs for cleanup**
+// Keep track of previous marker IDs for cleanup
 static std::set<int> g_previous_bim_edge_markers;
+
+static std::set<int> visualized_before_planes;
 
 // Function to initialize the publisher
 void initializeLocalBAPublisher(std::shared_ptr<rclcpp::Node> node) {
     g_nodePtr = node;
     g_localBAPublisher = node->create_publisher<visualization_msgs::msg::MarkerArray>(
         "local_ba_graph", 1);
-    // std::cout << "🎯 Local BA visualization publisher initialized!" << std::endl;
 }
 
 // Function to publish visualization
 void publishLocalBAVisualization(const visualization_msgs::msg::MarkerArray& markers) {
     if (g_localBAPublisher) {
         g_localBAPublisher->publish(markers);
-        // std::cout << "📊 Published " << markers.markers.size() 
-        //           << " local BA visualization markers" << std::endl;
-    } 
-    // else {
-    //     std::cout << "❌ Local BA publisher not initialized!" << std::endl;
-    // }
+    }
+    else {
+        std::cout << "❌ Local BA publisher not initialized!" << std::endl;
+    }
 }
 
 visualization_msgs::msg::MarkerArray visualizeFixedStatus(
@@ -109,10 +134,6 @@ visualization_msgs::msg::MarkerArray visualizeFixedStatus(
         status_array.markers.push_back(opt_plane_marker);
     }
     
-    // std::cout << "🔴 Fixed KeyFrames: " << fixed_kf_positions.size() << std::endl;
-    // std::cout << "🟢 Optimizable KeyFrames: " << optimizable_kf_positions.size() << std::endl;
-    // std::cout << "🟠 Fixed BIM Planes: " << fixed_plane_centers.size() << std::endl;
-    // std::cout << "🔵 Optimizable Detected Planes: " << optimizable_plane_centers.size() << std::endl;
     
     return status_array;
 }
@@ -315,7 +336,6 @@ visualization_msgs::msg::MarkerArray visualizeKeyFrames(
             // Eigen::Vector3d position = pose.translation();
             // kf_positions.push_back(position);
 
-            // **FIX: Get world-to-camera transform for proper position**
             g2o::SE3Quat Tcw = se3_vertex->estimate();
             g2o::SE3Quat Twc = Tcw.inverse();  // World-to-camera (camera pose in world)
             Eigen::Vector3d position = Twc.translation();  // Camera position in world
@@ -454,13 +474,12 @@ visualization_msgs::msg::MarkerArray visualizeMarkers(
 
 visualization_msgs::msg::MarkerArray visualizeDetectedPlanesCentroid(
     g2o::SparseOptimizer* optimizer,
-    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes, // **ADDED PARAMETER**
+    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes,
     const std::string& frame_id,
     int& marker_id) {
     
     visualization_msgs::msg::MarkerArray plane_array;
     
-    // **Create a map from vertex ID to detected plane for quick lookup**
     std::unordered_map<int, ORB_SLAM3::Plane*> vertexToDetectedPlane;
     for (const auto& plane : detectedPlanes) {
         if (plane) {
@@ -473,12 +492,10 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanesCentroid(
         auto plane_vertex = dynamic_cast<g2o::VertexPlane*>(vertex_pair.second);
         if (plane_vertex)// && !plane_vertex->fixed()) { // Only non-fixed planes (detected planes) 
         {
-            // **GET THE ORIGINAL DETECTED PLANE OBJECT**
             auto it = vertexToDetectedPlane.find(vertex_pair.first);
             if (it != vertexToDetectedPlane.end()) {
                 ORB_SLAM3::Plane* originalPlane = it->second;
                 
-                // **USE CENTROID FROM ORIGINAL DETECTED PLANE**
                 Eigen::Vector3f centroid = originalPlane->getCentroid();
                 Eigen::Vector3d normal = originalPlane->getGlobalEquation().normal();
                 float length = originalPlane->getLength();
@@ -490,9 +507,15 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanesCentroid(
                 // Create enhanced plane visualization data
                 PlaneVisualizationData plane_data;
                 plane_data.centre = centroid.cast<double>();
-                plane_data.q = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d(0,0,1), normal);
-                plane_data.scale = Eigen::Vector3d(std::max(length, 0.5f), 2.5, 0.1);
-                
+
+                if (ORB_SLAM3::XYZcoord) {
+                    plane_data.q = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d(1,0,0), normal); // for XYZ
+                    plane_data.scale = Eigen::Vector3d(0.1, std::max(length, 0.5f), 2.5); // for XYZ
+                }else {
+                    plane_data.q = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d(0,0,1), normal); // for Z-X-Y
+                    plane_data.scale = Eigen::Vector3d(std::max(length, 0.5f), 2.5, 0.1); // for Z-X-Y
+                }
+
                 // Color based on association with BIM
                 Eigen::Vector4d color;
                 if (originalPlane->getBIMId() != 0) {
@@ -506,7 +529,6 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanesCentroid(
                 plane_marker.ns = "local_ba/detected_planesCentroids";
                 plane_array.markers.push_back(plane_marker);
                 
-                // **ADD DETECTED PLANE ID TEXT LABEL**
                 visualization_msgs::msg::Marker planeLabel;
                 planeLabel.header.frame_id = frame_id;
                 planeLabel.header.stamp = rclcpp::Time(0);
@@ -521,11 +543,11 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanesCentroid(
                 planeLabel.pose.position.y = centroid.y();
                 planeLabel.pose.position.z = centroid.z() + 1.5;
                 
-                std::string labelText = "Det#" + std::to_string(originalPlane->getId());
-                if (originalPlane->getBIMId() != 0) {
-                    labelText += "↔BIM#" + std::to_string(originalPlane->getBIMId());
-                }
-                planeLabel.text = labelText;
+                // std::string labelText = "Det#" + std::to_string(originalPlane->getId());
+                // if (originalPlane->getBIMId() != 0) {
+                //     labelText += "↔BIM#" + std::to_string(originalPlane->getBIMId());
+                // }
+                // planeLabel.text = labelText;
                 planeLabel.scale.z = 0.25;
                 planeLabel.color.r = 1.0;
                 planeLabel.color.g = 1.0;
@@ -534,8 +556,6 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanesCentroid(
                 
                 plane_array.markers.push_back(planeLabel);
                 
-                // std::cout << "🔵 Detected Plane #" << originalPlane->getId() 
-                //           << " visualized at centroid: [" << centroid.transpose() << "]" << std::endl;
             }
         }
     }
@@ -547,13 +567,12 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanesCentroid(
 
 visualization_msgs::msg::MarkerArray visualizeDetectedPlanes(
     g2o::SparseOptimizer* optimizer,
-    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes, // **ADDED PARAMETER**
+    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes,
     const std::string& frame_id,
     int& marker_id) {
     
     visualization_msgs::msg::MarkerArray plane_array;
     
-    // **Create a map from vertex ID to detected plane for quick lookup**
     std::unordered_map<int, ORB_SLAM3::Plane*> vertexToDetectedPlane;
     for (const auto& plane : detectedPlanes) {
         if (plane) {
@@ -561,12 +580,11 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanes(
         }
     }
 
-    // Extract Plane vertices - **ONLY PROCESS PLANES THAT ARE IN THE DETECTED PLANES LIST**
+    // Extract Plane vertices
     for (const auto& vertex_pair : optimizer->vertices()) {
         auto plane_vertex = dynamic_cast<g2o::VertexPlane*>(vertex_pair.second);
         if (plane_vertex) {
             
-            // **ONLY PROCESS IF THIS VERTEX IS IN THE DETECTED PLANES MAP**
             auto it = vertexToDetectedPlane.find(vertex_pair.first);
             if (it != vertexToDetectedPlane.end()) {
                 // This vertex corresponds to a detected plane (not a BIM wall)
@@ -590,7 +608,6 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanes(
                 plane_marker.ns = "local_ba/detected_planes";
                 plane_array.markers.push_back(plane_marker);
                 
-                // **ADD DETECTED PLANE ID TEXT LABEL**
                 visualization_msgs::msg::Marker planeLabel;
                 planeLabel.header.frame_id = frame_id;
                 planeLabel.header.stamp = rclcpp::Time(0);
@@ -605,11 +622,11 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanes(
                 planeLabel.pose.position.y = plane_data.centre.y();
                 planeLabel.pose.position.z = plane_data.centre.z() + 1.5;
                 
-                std::string labelText = "Det#" + std::to_string(originalPlane->getId());
-                if (originalPlane->getBIMId() != 0) {
-                    labelText += "↔BIM#" + std::to_string(originalPlane->getBIMId());
-                }
-                planeLabel.text = labelText;
+                // std::string labelText = "Det#" + std::to_string(originalPlane->getId());
+                // if (originalPlane->getBIMId() != 0) {
+                //     labelText += "↔BIM#" + std::to_string(originalPlane->getBIMId());
+                // }
+                // planeLabel.text = labelText;
                 planeLabel.scale.z = 0.25;
                 planeLabel.color.r = 1.0;
                 planeLabel.color.g = 1.0;
@@ -627,13 +644,12 @@ visualization_msgs::msg::MarkerArray visualizeDetectedPlanes(
 
 visualization_msgs::msg::MarkerArray visualizeBIMWalls(
     g2o::SparseOptimizer* optimizer,
-    const std::vector<ORB_SLAM3::Plane*>& bimWalls, // **ADDED PARAMETER**
+    const std::vector<ORB_SLAM3::Plane*>& bimWalls,
     const std::string& frame_id,
     int& marker_id) {
     
     visualization_msgs::msg::MarkerArray bim_array;
     
-    // **Create a map from vertex ID to BIM wall for quick lookup**
     std::unordered_map<int, ORB_SLAM3::Plane*> vertexToBimWall;
     for (const auto& bimWall : bimWalls) {
         if (bimWall) {
@@ -646,32 +662,43 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
         auto plane_vertex = dynamic_cast<g2o::VertexPlane*>(vertex_pair.second);
         if (plane_vertex && plane_vertex->fixed()) { // BIM walls are fixed
             
-            // **GET THE ORIGINAL BIM WALL OBJECT**
             auto it = vertexToBimWall.find(vertex_pair.first);
             if (it != vertexToBimWall.end()) {
                 ORB_SLAM3::Plane* originalBimWall = it->second;
                 
-                // **USE CENTROID FROM ORIGINAL BIM WALL**
                 Eigen::Vector3f centroid = originalBimWall->getCentroid();
                 // change the centroid y
-                centroid.y() += 5.0; // Move down by 1 meter
+                if (ORB_SLAM3::XYZcoord) {
+                    // centroid.z() -= 5.0;  // for XYZ
+                }else {
+                    // centroid.y() += 5.0; // for Z-X-Y
+                }
+                
                 Eigen::Vector3d normal = originalBimWall->getGlobalEquation().normal();
                 float length = originalBimWall->getLength();
                 
                 // Create enhanced plane visualization data
                 PlaneVisualizationData plane_data;
                 plane_data.centre = centroid.cast<double>();
-                plane_data.q = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d(0,0,1), normal);
-                plane_data.scale = Eigen::Vector3d(std::max(length, 1.0f), 3.0, 0.15); // Dynamic scaling
-                
+
+                if (ORB_SLAM3::XYZcoord) {
+                    plane_data.q = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d(1,0,0), normal); // for XYZ
+                    plane_data.scale = Eigen::Vector3d(0.15, std::max(length, 1.0f),  3.0); // for XYZ
+                }else {
+                    plane_data.q = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d(0,0,1), normal); // for Z-X-Y
+                    plane_data.scale = Eigen::Vector3d(std::max(length, 1.0f), 3.0, 0.15); // for Z-X-Y
+                }
+
                 // Color based on BIM ID
                 Eigen::Vector4d color;
-                if (originalBimWall->getBIMId() == 1) {
-                    color = {1.0, 0.4, 0.0, 0.8}; // Bright orange for BIM #1
+                // if it is bigger then 1000, it is a special BIM wall
+                if (originalBimWall->getBIMId() >= 100) {
+                    color = {1.0, 0.4, 0.0, 0.0}; // Bright orange for BIM #1
                 } else if (originalBimWall->getBIMId() == 3) {
-                    color = {1.0, 0.6, 0.2, 0.8}; // **CHANGED: Lighter orange for BIM #3**
+                    color = {1.0, 0.4, 0.0, 0.3};
                 } else {
-                    color = {1.0, 0.5, 0.0, 0.7}; // Default orange
+                    color = {1.0, 0.4, 0.0, 0.3};
+                    // color = {1.0, 0.5, 0.0, 0.3}; // Default orange
                 }
                 
                 auto plane_marker = createPlaneMarker(
@@ -679,7 +706,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
                 plane_marker.ns = "local_ba/bim_walls";
                 bim_array.markers.push_back(plane_marker);
                 
-                // **ADD BIM WALL ID TEXT LABEL**
                 visualization_msgs::msg::Marker wallLabel;
                 wallLabel.header.frame_id = frame_id;
                 wallLabel.header.stamp = rclcpp::Time(0);
@@ -703,8 +729,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
                 
                 bim_array.markers.push_back(wallLabel);
                 
-                // std::cout << "📍 BIM Wall #" << originalBimWall->getBIMId() 
-                //           << " visualized at centroid: [" << centroid.transpose() << "]" << std::endl;
             }
         }
     }
@@ -753,7 +777,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
     std::vector<Eigen::Vector3d> kf_plane_lines;
     std::vector<Eigen::Vector3d> bim_edges;
     
-    // **STEP 1: CREATE DELETE MARKERS FOR PREVIOUS BIM EDGES**
     for (int old_id : g_previous_bim_edge_markers) {
         visualization_msgs::msg::Marker delete_marker;
         delete_marker.header.frame_id = frame_id;
@@ -776,7 +799,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
             auto kf_vertex = dynamic_cast<g2o::VertexSE3Expmap*>(vertices[1]);
             
             if (mp_vertex && kf_vertex) {
-                // **FIX: Use inverse transform for KeyFrame position**
                 g2o::SE3Quat Tcw = kf_vertex->estimate();
                 g2o::SE3Quat Twc = Tcw.inverse();  // World-to-camera (camera pose in world)
                 Eigen::Vector3d kf_position = Twc.translation();  // Camera position in world
@@ -793,7 +815,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
             auto plane_vertex = dynamic_cast<g2o::VertexPlane*>(vertices[1]);
             
             if (kf_vertex && plane_vertex) {
-                // **FIX: Use inverse transform for KeyFrame position**
                 g2o::SE3Quat Tcw = kf_vertex->estimate();
                 g2o::SE3Quat Twc = Tcw.inverse();  // World-to-camera (camera pose in world)
                 Eigen::Vector3d kf_position = Twc.translation();  // Camera position in world
@@ -814,7 +835,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
             auto plane2_vertex = dynamic_cast<g2o::VertexPlane*>(vertices[1]);
             
             if (plane1_vertex && plane2_vertex) {
-                // **NEW: Try to get actual centroids from original plane objects**
                 Eigen::Vector3d center1, center2;
                 bool found_centroids = false;
                 
@@ -848,7 +868,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
                     }
                 }
                 
-                // **FALLBACK: Use old calculation if centroids not found**
                 if (!found_centroids) {
                     g2o::Plane3D plane1 = plane1_vertex->estimate();
                     g2o::Plane3D plane2 = plane2_vertex->estimate();
@@ -856,7 +875,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
                     center2 = -plane2.coeffs()(3) * plane2.normal();
                 }
                 
-                // **USE CENTROID-BASED DISTANCE FOR VISUALIZATION DECISION**
                 double distance = (center1 - center2).norm();
                 
                 if (distance < 0.01) {
@@ -870,16 +888,10 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
                     bim_edges.push_back(center + Eigen::Vector3d(0, -size, 0));
                     bim_edges.push_back(center + Eigen::Vector3d(0, size, 0));
                     
-                    // std::cout << "🔴 BIM alignment (cross) at centroid: " << center.transpose() 
-                    //         << " distance: " << distance << std::endl;
                 } else {
-                    // **LARGER DISTANCE - SHOW LINE BETWEEN CENTROIDS**
                     bim_edges.push_back(center1);
                     bim_edges.push_back(center2);
                     
-                    // std::cout << "🔴 BIM alignment (line) between centroids: " 
-                    //         << center1.transpose() << " <-> " << center2.transpose()
-                    //         << " distance: " << distance << std::endl;
                 }
             }
         }
@@ -908,7 +920,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
     //     edge_array.markers.push_back(bim_marker);
     // }
 
-    // **STEP 2: CREATE NEW BIM EDGE MARKERS AND TRACK THEIR IDs**
     if (!bim_edges.empty()) {   // PRINTING BIM EDGES WITH CENTROID
         int bim_marker_id = marker_id++;
         auto bim_marker = createLineListMarker(
@@ -916,7 +927,6 @@ visualization_msgs::msg::MarkerArray visualizeBIMWalls(
         bim_marker.ns = "local_ba/bim_alignment_edges";
         edge_array.markers.push_back(bim_marker);
         
-        // **TRACK THIS MARKER ID FOR FUTURE CLEANUP**
         g_previous_bim_edge_markers.insert(bim_marker_id);
     }
     
@@ -930,7 +940,7 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
     const std::vector<ORB_SLAM3::Plane*>& detectedPlanes,
     const std::string& frame_id,
     int& marker_id,
-    bool useCentroidsForEdges) {  // **NEW PARAMETER**
+    bool useCentroidsForEdges) {
     
     visualization_msgs::msg::MarkerArray edge_array;
     
@@ -938,7 +948,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
     std::vector<Eigen::Vector3d> kf_plane_lines;
     std::vector<Eigen::Vector3d> bim_edges;
     
-    // **STEP 1: CREATE DELETE MARKERS FOR PREVIOUS BIM EDGES**
     for (int old_id : g_previous_bim_edge_markers) {
         visualization_msgs::msg::Marker delete_marker;
         delete_marker.header.frame_id = frame_id;
@@ -950,7 +959,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
     }
     g_previous_bim_edge_markers.clear(); // Clear the old tracking
     
-    // **CREATE LOOKUP MAPS FOR ORIGINAL PLANE OBJECTS**
     std::unordered_map<int, ORB_SLAM3::Plane*> vertexToBimWall;
     std::unordered_map<int, ORB_SLAM3::Plane*> vertexToDetectedPlane;
     
@@ -977,7 +985,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
             auto kf_vertex = dynamic_cast<g2o::VertexSE3Expmap*>(vertices[1]);
             
             if (mp_vertex && kf_vertex) {
-                // **FIX: Use inverse transform for KeyFrame position**
                 g2o::SE3Quat Tcw = kf_vertex->estimate();
                 g2o::SE3Quat Twc = Tcw.inverse();  // World-to-camera (camera pose in world)
                 Eigen::Vector3d kf_position = Twc.translation();  // Camera position in world
@@ -994,12 +1001,10 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
             auto plane_vertex = dynamic_cast<g2o::VertexPlane*>(vertices[1]);
             
             if (kf_vertex && plane_vertex) {
-                // **FIX: Use inverse transform for KeyFrame position**
                 g2o::SE3Quat Tcw = kf_vertex->estimate();
                 g2o::SE3Quat Twc = Tcw.inverse();  // World-to-camera (camera pose in world)
                 Eigen::Vector3d kf_position = Twc.translation();  // Camera position in world
                 
-                // **CHOOSE PLANE CENTER BASED ON PARAMETER**
                 Eigen::Vector3d plane_center;
                 if (useCentroidsForEdges) {
                     // Try to get centroid from original plane object
@@ -1035,7 +1040,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
             }
         }
         
-        // **BIM alignment edges (Edge2Planes) - WITH BOOLEAN OPTION**
         auto plane_plane_edge = dynamic_cast<ORB_SLAM3::Edge2Planes*>(edge);
         if (plane_plane_edge && vertices.size() >= 2) {
             auto plane1_vertex = dynamic_cast<g2o::VertexPlane*>(vertices[0]);
@@ -1047,7 +1051,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
                 int plane1_id = -1, plane2_id = -1;
                 
                 if (useCentroidsForEdges) {
-                    // **OPTION 1: Use original centroids from plane objects**
                     bool found_center1 = false, found_center2 = false;
                     
                     // Look for BIM walls first
@@ -1056,14 +1059,22 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
                     
                     if (bim1_it != vertexToBimWall.end()) {
                         center1 = bim1_it->second->getCentroid().cast<double>();
-                        center1.y() += 5.0; // Move BIM wall center down
+                        if (ORB_SLAM3::XYZcoord) {
+                            // center1.z() -= 5.0; // for XYZ
+                        }else {
+                            // center1.y() += 5.0; // for Z-X-Y
+                        }
                         plane1_type = "BIM";
                         plane1_id = bim1_it->second->getBIMId();
                         found_center1 = true;
                     }
                     if (bim2_it != vertexToBimWall.end()) {
                         center2 = bim2_it->second->getCentroid().cast<double>();
-                        center2.y() += 5.0;
+                        if (ORB_SLAM3::XYZcoord) {
+                            // center2.z() -= 5.0; // for XYZ
+                        }else {
+                            // center1.y() += 5.0; // for Z-X-Y
+                        }
                         plane2_type = "BIM";
                         plane2_id = bim2_it->second->getBIMId();
                         found_center2 = true;
@@ -1102,7 +1113,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
                     std::cout << "🔵 Using CENTROIDS for edge visualization" << std::endl;
                     
                 } else {
-                    // **OPTION 2: Use optimized plane equations**
                     g2o::Plane3D plane1 = plane1_vertex->estimate();
                     g2o::Plane3D plane2 = plane2_vertex->estimate();
                     center1 = -plane1.coeffs()(3) * plane1.normal();
@@ -1129,7 +1139,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
                     std::cout << "🔴 Using OPTIMIZED EQUATIONS for edge visualization" << std::endl;
                 }
                 
-                // **USE THE CHOSEN CENTERS FOR VISUALIZATION**
                 double distance = (center1 - center2).norm();
                 
                 if (distance < 0.01) {
@@ -1148,7 +1157,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
                               << " at center: " << center.transpose() 
                               << " distance: " << distance << std::endl;
                 } else {
-                    // **LARGER DISTANCE - SHOW LINE BETWEEN CENTERS**
                     bim_edges.push_back(center1);
                     bim_edges.push_back(center2);
                     
@@ -1178,11 +1186,9 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
         edge_array.markers.push_back(kf_plane_marker);
     }
     
-    // **STEP 2: CREATE NEW BIM EDGE MARKERS WITH MODE INDICATION**
     if (!bim_edges.empty()) {
         int bim_marker_id = marker_id++;
         
-        // **DIFFERENT COLORS BASED ON MODE**
         Eigen::Vector4d edge_color;
         if (useCentroidsForEdges) {
             edge_color = {1, 0, 0, 1.0}; // RED for centroid mode
@@ -1193,7 +1199,6 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
         auto bim_marker = createLineListMarker(
             frame_id, rclcpp::Time(0), bim_marker_id, bim_edges, 0.05, edge_color);
         
-        // **DIFFERENT NAMESPACE BASED ON MODE**
         if (useCentroidsForEdges) {
             bim_marker.ns = "local_ba/bim_alignment_edges_centroid";
         } else {
@@ -1202,28 +1207,146 @@ visualization_msgs::msg::MarkerArray visualizeEdges(
         
         edge_array.markers.push_back(bim_marker);
         
-        // **TRACK THIS MARKER ID FOR FUTURE CLEANUP**
         g_previous_bim_edge_markers.insert(bim_marker_id);
     }
     
     return edge_array;
 }
 
+visualization_msgs::msg::MarkerArray visualizeDetectedPlanesWithAssociations(
+    g2o::SparseOptimizer* optimizer,
+    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes,
+    const std::vector<std::pair<ORB_SLAM3::Plane*, ORB_SLAM3::Plane*>>& g_associations,
+    const std::string& frame_id,
+    int& marker_id)
+{
+    visualization_msgs::msg::MarkerArray plane_array;
+
+    // Map detectedPlane pointer to its associated BIM wall (if any)
+    std::unordered_map<ORB_SLAM3::Plane*, ORB_SLAM3::Plane*> detected_to_bim;
+    for (const auto& pair : g_associations) {
+        detected_to_bim[pair.second] = pair.first;
+    }
+
+    for (const auto& detectedPlane : detectedPlanes) {
+        if (!detectedPlane) continue;
+
+        Eigen::Vector3d centroid = detectedPlane->getCentroid().cast<double>();
+        Eigen::Vector3d normal = detectedPlane->getGlobalEquation().normal();
+        Eigen::Quaterniond orientation;
+        Eigen::Vector3d scale;
+        Eigen::Vector4d color;
+        bool is_associated = false;
+
+        // Default: use detected plane's normal and centroid
+        orientation = Eigen::Quaterniond::FromTwoVectors(
+            ORB_SLAM3::XYZcoord ? Eigen::Vector3d(1,0,0) : Eigen::Vector3d(0,0,1),
+            normal
+        );
+        scale = ORB_SLAM3::XYZcoord
+            ? Eigen::Vector3d(0.1, std::max(detectedPlane->getLength(), 0.5f), 2.5)
+            : Eigen::Vector3d(std::max(detectedPlane->getLength(), 0.5f), 2.5, 0.1);
+        color = {0.0, 0.5, 1.0, 1.0}; // Blue for unassociated
+
+        // If associated, update centroid and normal
+        auto it = detected_to_bim.find(detectedPlane);
+        if (it != detected_to_bim.end() && it->second) {
+            int plane_id = detectedPlane->getId();
+            if (visualized_before_planes.find(plane_id) == visualized_before_planes.end()) {
+                 // Visualize BEFORE optimization (original centroid/normal)
+                std::vector<ORB_SLAM3::Plane*> single_plane_vec = {detectedPlane};
+                int temp_marker_id = 100000 + plane_id; // Use a unique marker id for before state
+
+                // Get the marker for this plane before optimization
+                auto before_marker_array = visualizeDetectedPlanesCentroid(
+                    optimizer, single_plane_vec, frame_id, temp_marker_id);
+
+                // Optionally, change the namespace to indicate "before optimization"
+                // for (auto& marker : before_marker_array.markers) {
+                //     marker.ns = "local_ba/detected_planes_before_optimization";
+                // }
+
+                // Publish only this marker
+                publishLocalBAVisualization(before_marker_array);
+
+                // Sleep for 0.3 second to allow visualization
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+                // Mark as visualized
+                visualized_before_planes.insert(plane_id);
+            }
+     
+            is_associated = true;
+            ORB_SLAM3::Plane* bimWall = it->second;
+            Eigen::Vector3d bim_normal = bimWall->getGlobalEquation().normal().normalized();
+            Eigen::Vector3d bim_point = bimWall->getCentroid().cast<double>();
+
+            // Project detected centroid onto BIM wall plane
+            Eigen::Vector3d v = centroid - bim_point;
+            double dist = v.dot(bim_normal);
+            Eigen::Vector3d projected_centroid = centroid - dist * bim_normal;
+
+            centroid = projected_centroid;
+            normal = bim_normal;
+            orientation = Eigen::Quaterniond::FromTwoVectors(
+                ORB_SLAM3::XYZcoord ? Eigen::Vector3d(1,0,0) : Eigen::Vector3d(0,0,1),
+                normal
+            );
+            color = {0.0, 1.0, 0.0, 1.0}; // Green for associated
+        }
+
+        if (is_associated) {
+            // Create visualization data
+            PlaneVisualizationData plane_data;
+            plane_data.centre = centroid;
+            plane_data.q = orientation;
+            plane_data.scale = scale;
+
+            auto plane_marker = createPlaneMarker(
+                frame_id, rclcpp::Time(0), marker_id++, plane_data, color);
+            plane_marker.ns = "local_ba/detected_planesWithAssociations";
+            plane_array.markers.push_back(plane_marker);
+
+            // Add label
+            visualization_msgs::msg::Marker planeLabel;
+            planeLabel.header.frame_id = frame_id;
+            planeLabel.header.stamp = rclcpp::Time(0);
+            planeLabel.id = marker_id++;
+            planeLabel.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+            planeLabel.action = visualization_msgs::msg::Marker::ADD;
+            planeLabel.lifetime = rclcpp::Duration::from_seconds(0);
+            planeLabel.ns = "local_ba/detected_planeWithAssociations_labels";
+            planeLabel.pose.position.x = centroid.x();
+            planeLabel.pose.position.y = centroid.y();
+            planeLabel.pose.position.z = centroid.z() + 1.5;
+            // std::string labelText = "Det#" + std::to_string(detectedPlane->getId());
+            // if (is_associated) {
+            //     labelText += "↔BIM#" + std::to_string(detected_to_bim[detectedPlane]->getBIMId());
+            // }
+            // planeLabel.text = labelText;
+            planeLabel.scale.z = 0.25;
+            planeLabel.color.r = 1.0;
+            planeLabel.color.g = 1.0;
+            planeLabel.color.b = 0.0;
+            planeLabel.color.a = 1.0;
+            plane_array.markers.push_back(planeLabel);
+        }
+    }
+
+    return plane_array;
+}
+
 visualization_msgs::msg::MarkerArray visualizeLocalBAGraph(
     g2o::SparseOptimizer* optimizer,
-    const std::vector<ORB_SLAM3::Plane*>& bimWalls,      // **ADD BIM WALLS**
-    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes, // **ADD DETECTED PLANES**
+    const std::vector<ORB_SLAM3::Plane*>& bimWalls,
+    const std::vector<ORB_SLAM3::Plane*>& detectedPlanes,
+    const std::vector<std::pair<ORB_SLAM3::Plane*, ORB_SLAM3::Plane*>>& g_associations,
     const std::string& frame_id,
     int initial_id) {
     
     visualization_msgs::msg::MarkerArray complete_array;
     int marker_id = initial_id;
     
-    std::cout << "\n=== Visualizing Local BA Graph ===" << std::endl;
-    std::cout << "Vertices: " << optimizer->vertices().size() << std::endl;
-    std::cout << "Edges: " << optimizer->edges().size() << std::endl;
-    std::cout << "BIM Walls: " << bimWalls.size() << std::endl;
-    std::cout << "Detected Planes: " << detectedPlanes.size() << std::endl;
     
     // Visualize all components
     auto keyframe_markers = visualizeKeyFrames(optimizer, frame_id, marker_id);
@@ -1231,12 +1354,12 @@ visualization_msgs::msg::MarkerArray visualizeLocalBAGraph(
     // auto plane_markers = visualizePlanes(optimizer, frame_id, marker_id);
     auto marker_markers = visualizeMarkers(optimizer, frame_id, marker_id);
     
-    // **NEW: Use the passed BIM walls and detected planes for better visualization**
     auto bim_markers = visualizeBIMWalls(optimizer, bimWalls, frame_id, marker_id);
     // auto detected_plane_markers = visualizeDetectedPlanes(optimizer, detectedPlanes, frame_id, marker_id);
     // For centroid mode
-    auto detected_plane_markersCentroid = visualizeDetectedPlanesCentroid(optimizer, detectedPlanes, frame_id, marker_id);
-   
+    // auto detected_plane_markersCentroid = visualizeDetectedPlanesCentroid(optimizer, detectedPlanes, frame_id, marker_id);
+    // For g_associations mode
+    auto detected_plane_markersWithAssociations = visualizeDetectedPlanesWithAssociations(optimizer, detectedPlanes, g_associations, frame_id, marker_id);
 
     // auto edge_markers = visualizeEdges(optimizer, bimWalls, detectedPlanes, frame_id, marker_id, false); 
     // For centroid mode
@@ -1260,17 +1383,20 @@ visualization_msgs::msg::MarkerArray visualizeLocalBAGraph(
     // complete_array.markers.insert(complete_array.markers.end(), 
     //                              detected_plane_markers.markers.begin(), detected_plane_markers.markers.end());
     // For centroid mode
+    // complete_array.markers.insert(complete_array.markers.end(), 
+    //                              detected_plane_markersCentroid.markers.begin(), detected_plane_markersCentroid.markers.end());
+    // For g_associations mode
     complete_array.markers.insert(complete_array.markers.end(), 
-                                 detected_plane_markersCentroid.markers.begin(), detected_plane_markersCentroid.markers.end());
+                                 detected_plane_markersWithAssociations.markers.begin(), detected_plane_markersWithAssociations.markers.end());
+   
+    
     complete_array.markers.insert(complete_array.markers.end(), 
                                  edge_markers.markers.begin(), edge_markers.markers.end());
     
-    std::cout << "Total visualization markers: " << complete_array.markers.size() << std::endl;
-    
+
     // Auto-publish the visualization
     publishLocalBAVisualization(complete_array);
-    
-    std::cout << "=== Local BA Graph Visualization Complete ===" << std::endl;
+
     
     return complete_array;
 }
